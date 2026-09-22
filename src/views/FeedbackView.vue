@@ -554,19 +554,33 @@ function initThreeScene() {
 }
 
 // 声调曲线对比图（标准曲线由后端生成）
+//改动1 -- > 使用voiced_flag决定是否保留f0：有声保留，无声设为null断线
 function initToneChart() {
   if (!toneChartRef.value) return
   const existing = echarts.getInstanceByDom(toneChartRef.value)
   if (existing) existing.dispose()
   const chart = echarts.init(toneChartRef.value)
 
-  const userF0 = assessment.value?.audioAnalysis?.f0 || []
-  // 标准曲线：优先使用后端返回的 standardF0，无数据时基于识别声调在前端生成兜底曲线
-  let standardF0 = assessment.value?.audioAnalysis?.standardF0 || []
-  if (standardF0.length === 0 && userF0.length > 0) {
+  const rawF0: number[] = assessment.value?.audioAnalysis?.f0 || []
+  const voiced: (boolean | undefined)[] = assessment.value?.audioAnalysis?.voiced_flag || []
+  const voicedProbs: number[] = assessment.value?.audioAnalysis?.voiced_probs || []
+
+  // 用 voiced_flag 掩码：unvoiced -> null（ECharts 遇到 null 会断线）
+  const userF0 = rawF0.map((v, i) => {
+    const vf = voiced[i]
+    if (typeof vf === 'boolean') {
+      return vf ? v : null
+    }
+    // 回退：若没有 voiced_flag 字段，则以 f0>0 判定（保持向后兼容）
+    return (typeof v === 'number' && v > 0) ? v : null
+  })
+
+  // 标准曲线：优先后端提供的 standardF0，否则按识别声调生成兜底并确保与 rawF0 等长
+  let standardF0: number[] = assessment.value?.audioAnalysis?.standardF0 || []
+  if ((!standardF0 || standardF0.length === 0) && rawF0.length > 0) {
     const tone = assessment.value?.audioAnalysis?.detectedTone || 1
-    standardF0 = userF0.map((_, i) => {
-      const t = i / userF0.length
+    standardF0 = rawF0.map((_, i) => {
+      const t = i / rawF0.length
       if (tone === 2) return 120 + t * 80
       if (tone === 3) return 150 - t * 40 + (t > 0.5 ? (t - 0.5) * 120 : 0)
       if (tone === 4) return 220 - t * 80
@@ -574,17 +588,60 @@ function initToneChart() {
     })
   }
 
-  const labels = userF0.map((_, i) => i)
+  // 若 standardF0 长度与 rawF0 不一致，简单重采样到 rawF0.length（保证对齐）
+  if (standardF0.length !== rawF0.length) {
+    const n = Math.max(1, rawF0.length || standardF0.length)
+    const src = standardF0.length ? standardF0 : new Array(n).fill(null)
+    standardF0 = new Array(n).fill(null).map((_, i) => {
+      const idx = Math.floor(i / n * src.length)
+      return src[idx] ?? null
+    })
+  }
+
+  const labels = rawF0.map((_, i) => i)
 
   chart.setOption({
     title: { text: '声调曲线对比', left: 'center', textStyle: { fontSize: 14 } },
-    tooltip: { trigger: 'axis' },
+    tooltip: {
+      trigger: 'axis',
+      // tooltip 显示：频率 + 是否有声 + voiced_prob（若有）
+      formatter: (params: any) => {
+        // params 为数组：0=您的发音,1=标准发音（视图序列顺序）
+        const p = Array.isArray(params) ? params[0] : params
+        const idx = p?.dataIndex ?? 0
+        const val = p?.data ?? null
+        const isVoiced = voiced[idx]
+        const prob = voicedProbs[idx]
+        const voicedTxt = typeof isVoiced === 'boolean' ? (isVoiced ? '有声' : '无声') : ''
+        const probTxt = (typeof prob === 'number') ? `<br/>voiced_prob: ${prob.toFixed(2)}` : ''
+        return `时间: ${idx}<br/>频率: ${val === null ? '—' : (val.toFixed ? val.toFixed(1) + ' Hz' : val)}<br/>${voicedTxt}${probTxt}`
+      }
+    },
     legend: { data: ['您的发音', '标准发音'], bottom: 0 },
     xAxis: { type: 'category', data: labels, name: '时间' },
     yAxis: { type: 'value', name: '频率 (Hz)' },
     series: [
-      { name: '您的发音', type: 'line', data: userF0, smooth: true, lineStyle: { color: '#409eff', width: 3 }, itemStyle: { color: '#409eff' } },
-      { name: '标准发音', type: 'line', data: standardF0, smooth: true, lineStyle: { color: '#67c23a', width: 3, type: 'dashed' }, itemStyle: { color: '#67c23a' } },
+      {
+        name: '您的发音',
+        type: 'line',
+        data: userF0,
+        connectNulls: false, // 断线
+        smooth: true,
+        lineStyle: { color: '#409eff', width: 3 },
+        itemStyle: { color: '#409eff' },
+        symbol: 'circle',
+        symbolSize: 6,
+        // 通过 emphasis 或 tooltip 显示 voiced_prob（已经在 tooltip formatter 中处理）
+      },
+      {
+        name: '标准发音',
+        type: 'line',
+        data: standardF0,
+        smooth: true,
+        lineStyle: { color: '#67c23a', width: 3, type: 'dashed' },
+        itemStyle: { color: '#67c23a' },
+        symbol: 'none',
+      },
     ],
     grid: { left: 60, right: 30, top: 40, bottom: 40 },
   })
