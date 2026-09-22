@@ -157,23 +157,57 @@ STANDARD_PARAMS = {
 
 def analyze_audio(audio_data: np.ndarray, sr: int) -> AudioAnalysisResult:
     """分析音频，提取声学特征（共振峰使用LPC真实估计，无随机值）"""
-    # 基频F0
+    #原始信号可能存在直流偏移或高频能量不足，影响F0与LCP求解稳定性
+    #对输入音频做基频预处理：去均值 + 预加重
+
+    # 1) 确保为浮点 numpy 数组，并把多声道混成单声道（按最后一个维度平均）
+    y_orig = np.asarray(audio_data, dtype=np.float32)
+    if y_orig.ndim > 1:
+        # 通常 librosa.load 返回 1-D，但为保险处理多通道输入：
+        # 假设形状为 (n_samples, n_channels) 或 (n_channels, n_samples)，
+        # 使用 axis=-1 对常见形态 (n_samples, n_channels) 生效。
+        y_orig = np.mean(y_orig, axis=-1)
+
+    # 如果音频为空，快速返回一个空的结果（避免后续函数报错）
+    if y_orig.size == 0:
+        return AudioAnalysisResult(
+            f0=[],
+            f1=[],
+            f2=[],
+            energy=[],
+            duration=0.0,
+            sample_rate=sr,
+            mfcc=[],
+        )
+
+    # 2) 计算并保留原始能量（用于质量检测/比较）
+    energy = librosa.feature.rms(y=y_orig)[0].tolist()
+
+    # 3) 去均值（demean）
+    y = y_orig - float(np.mean(y_orig))
+
+    # 4) 预加重（pre-emphasis），常用系数 alpha = 0.97
+    alpha = 0.97
+    y_pre = np.empty_like(y)
+    y_pre[0] = y[0]
+    if y_pre.size > 1:
+        y_pre[1:] = y[1:] - alpha * y[:-1]
+
+    # 基频F0的提取
     f0, voiced_flag, voiced_probs = librosa.pyin(
-        audio_data, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'), sr=sr
+        y_pre, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'), sr=sr
     )
     f0 = np.nan_to_num(f0, nan=0.0).tolist()
     
-    # MFCC特征
-    mfcc = librosa.feature.mfcc(y=audio_data, sr=sr, n_mfcc=13)
+    # MFCC特征  --> 使用预加重信号，得到略好一点的高频特征
+    mfcc = librosa.feature.mfcc(y=y_pre, sr=sr, n_mfcc=13)
     mfcc_list = mfcc.tolist()
     
-    # 能量
-    energy = librosa.feature.rms(y=audio_data)[0].tolist()
     
-    # 共振峰（LPC线性预测真实估计）
-    f1, f2 = estimate_formants(audio_data, sr)
+    # 共振峰（LPC线性预测真实估计）  -->  使用预加重信号，提高短时谱分辨率
+    f1, f2 = estimate_formants(y_pre, sr)
     
-    duration = len(audio_data) / sr
+    duration = len(y_orig) / sr
     
     return AudioAnalysisResult(
         f0=f0,
@@ -182,7 +216,10 @@ def analyze_audio(audio_data: np.ndarray, sr: int) -> AudioAnalysisResult:
         energy=energy,
         duration=duration,
         sample_rate=sr,
-        mfcc=mfcc_list
+        mfcc=mfcc_list,
+        #voiced_flag和voiced_probs上版没有保留，只能靠f0>0判断是否有声
+        voiced_flag = voiced_flag,
+        voiced_probs = voiced_probs
     )
 
 def assess_pronunciation(
