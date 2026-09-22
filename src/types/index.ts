@@ -80,6 +80,10 @@ export interface AudioAnalysisResult {
   duration: number // 时长
   sampleRate: number // 采样率
   mfcc: number[][] // MFCC特征
+  //新增：
+  voiced_flag?: boolean[]
+  voiced_probs?: number[]
+  
   // 深度学习分析结果
   recognizedText: string // Wav2Vec2 识别出的拼音文本
   detectedTone: number // 识别出的声调 (0-4)

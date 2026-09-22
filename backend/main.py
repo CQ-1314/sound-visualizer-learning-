@@ -81,6 +81,10 @@ class AudioAnalysisResult(BaseModel):
     duration: float
     sample_rate: int
     mfcc: list[list[float]]
+    #新增voiced判定与概率
+    voiecd_flag:list[bool] = []
+    voiced_probs:list[float] = []
+
     # 深度学习分析结果
     recognized_text: str = ""
     detected_tone: int = 0
