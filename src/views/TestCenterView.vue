@@ -66,7 +66,7 @@ async function startTest() {
 }
 
 async function submit() {
-  recordingStore.stopRecording()
+  await recordingStore.stopRecording() // 等录音 Blob 就绪，避免竞态取到空录音
   await recordingStore.analyzeRecording(unitId.value)
   if (recordingStore.error) {
     ElMessage.error(recordingStore.error)

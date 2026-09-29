@@ -84,6 +84,18 @@ async function submitRequest() {
       </el-select>
     </div>
 
+    <!-- 后端不可用 ≠ 没有内容：错误态要单独说清，否则会被误读成「搜不到」 -->
+    <div v-if="unitsStore.error" class="load-error">
+      <el-alert
+        type="error"
+        show-icon
+        :closable="false"
+        title="没连上后端，所以这里看起来是空的"
+        description="学习单元来自后端 /api/units。请先启动后端（npm run backend 或 npm run dev:all），再点右侧「重新加载」。"
+      />
+      <el-button type="primary" size="small" @click="unitsStore.fetchPublished()">重新加载</el-button>
+    </div>
+
     <div v-if="results.length" class="result-list">
       <el-card v-for="u in results" :key="u.id" shadow="hover" class="result-card">
         <div class="head">
@@ -122,6 +134,8 @@ async function submitRequest() {
 
 <style scoped>
 .search-view { max-width: 800px; margin: 0 auto; }
+.load-error { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.load-error :deep(.el-alert) { flex: 1; }
 .query, .hint { color: #909399; font-size: 13px; }
 .filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 16px; }
 .result-list { display: flex; flex-direction: column; gap: 12px; margin: 16px 0; }

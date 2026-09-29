@@ -204,6 +204,27 @@ export const unitsApi = {
   },
 }
 
+// 关卡 API（30 关 L01–L30 · 第 4 周 D 交付：接 C 的 /api/units）
+//
+// 说明：本项目前端已统一走上面的 request() 封装层（基于 fetch，承担 axios 的封装职责：
+// 统一 baseURL / 请求头 / 错误抛出），因此这里复用同一层，不额外引入 axios 依赖，
+// 避免 1.0 期出现两套网络层。
+export const levelsApi = {
+  /**
+   * 关卡列表。
+   * @param status '' = 全部（后台 CMS 用）；'published' = 仅已发布（大众端关卡页用，
+   *   未审核内容不公开）
+   */
+  list(status = ''): Promise<ApiResponse<CmsUnit[]>> {
+    return unitsApi.list(status)
+  },
+
+  /** 单关详情 */
+  getById(levelId: string): Promise<ApiResponse<CmsUnit>> {
+    return unitsApi.getById(levelId)
+  },
+}
+
 // 用户反馈
 export const feedbackApi = {
   submit(payload: {

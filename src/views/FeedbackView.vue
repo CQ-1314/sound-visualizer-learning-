@@ -842,8 +842,25 @@ watch(
 
 <template>
   <div class="feedback-view">
+    <!-- 没有结果时的明确状态：分析结果只保存在内存里，刷新页面 / 直接打开本页 /
+         上一次分析失败，都会走到这里。绝不留空白页（这是「点了分析没反馈」的真实原因）。 -->
+    <div v-if="!assessment" class="card-block no-result">
+      <el-alert
+        type="info"
+        show-icon
+        :closable="false"
+        title="这里还没有这一关的分析结果"
+        description="分析结果只在本次录音之后保留：刷新页面、直接打开本页、或上一次分析失败时都会看不到。请回到关卡页重新录一次。"
+      />
+      <div class="no-result-actions">
+        <el-button type="primary" @click="router.push(`/learn/${unitId}`)">回关卡重新录音</el-button>
+        <el-button @click="router.push('/test')">去检测中心</el-button>
+        <el-button @click="router.push('/learn')">看全部 30 关</el-button>
+      </div>
+    </div>
+
     <!-- 录音质量 / 结论 / 可靠性 / 边界 -->
-    <div class="result-meta card-block">
+    <div v-if="assessment" class="result-meta card-block">
       <el-alert
         v-if="assessment && !assessment.evaluable"
         type="warning"
@@ -974,7 +991,7 @@ watch(
     </div>
 
     <!-- 操作按钮 -->
-    <div class="action-bar">
+    <div v-if="assessment" class="action-bar">
       <el-button :icon="'Refresh'" size="large" @click="router.push(`/learn/${unitId}`)">再次录音</el-button>
       <el-button v-if="assessment?.evaluable" type="success" :icon="'VideoPlay'" size="large" @click="router.push(`/learn/${unitId}`)">开始练习</el-button>
       <el-button type="primary" plain size="large" @click="router.push('/archive')">保存到档案</el-button>
@@ -987,6 +1004,7 @@ watch(
 
 <style scoped>
 .feedback-view { display: flex; flex-direction: column; gap: 20px; }
+.no-result-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
 .card-block { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06); }
 .headline-label { font-size: 13px; color: #909399; margin: 0; }
 .headline { margin: 8px 0 12px; font-size: 20px; color: #303133; }

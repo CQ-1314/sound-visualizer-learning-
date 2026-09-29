@@ -84,6 +84,18 @@ async function playDemo(char: string) {
       <p>看清声母、韵母、声调、音节与汉字之间的关系；点击节点查看详情并进入学习。</p>
     </header>
 
+    <!-- 后端不可用 ≠ 地图为空：错误态单独提示（D 小改，地图主体仍属 E） -->
+    <div v-if="unitsStore.error" class="load-error">
+      <el-alert
+        type="error"
+        show-icon
+        :closable="false"
+        title="没连上后端，所以地图上是 0 项"
+        description="地图节点来自后端 /api/units。请先启动后端（npm run backend 或 npm run dev:all），再点右侧「重新加载」。"
+      />
+      <el-button type="primary" size="small" @click="unitsStore.fetchPublished()">重新加载</el-button>
+    </div>
+
     <!-- MAP-01 总览：声母→韵母→声调→音节→汉字 -->
     <section class="overview card">
       <h4>发音层级关系</h4>
@@ -203,6 +215,8 @@ async function playDemo(char: string) {
 .pronunciation-map { max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
 .map-header h3 { margin: 0; font-size: 20px; }
 .map-header p { margin: 8px 0 0; color: #909399; font-size: 14px; }
+.load-error { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.load-error :deep(.el-alert) { flex: 1; }
 .card { background: #fff; border-radius: 12px; padding: 16px 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
 .overview h4, .filters h4, .layer-block h4 { margin: 0 0 12px; font-size: 15px; color: #303133; }
 .flow-chain { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

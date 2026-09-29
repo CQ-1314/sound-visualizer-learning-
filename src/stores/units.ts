@@ -29,7 +29,7 @@ export const useUnitsStore = defineStore('units', () => {
       const res = await unitsApi.list('published')
       publishedUnits.value = res.data as PublishedUnit[]
     } catch (e) {
-      error.value = '加载单元失败'
+      error.value = '加载单元失败：请确认后端已启动（npm run backend 或 npm run dev:all）'
       console.error(e)
     } finally {
       loading.value = false

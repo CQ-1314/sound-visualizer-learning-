@@ -1,27 +1,36 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { CHILD_NAV_PAGES } from '@/data/pages'
 
 const route = useRoute()
 const router = useRouter()
 const isCollapsed = ref(false)
 const mobileOpen = ref(false)
 
-const menuItems = [
-  { path: '/', icon: 'HomeFilled', title: '首页', desc: '搜索与快速入口' },
-  { path: '/map', icon: 'MapLocation', title: '发音地图', desc: '声韵调关系' },
-  { path: '/principles', icon: 'Reading', title: '发音原理', desc: '声音如何形成' },
-  { path: '/library', icon: 'Collection', title: '发音库', desc: '12个首批单元' },
-  { path: '/materials', icon: 'Document', title: '专业资料', desc: '术语与来源' },
-  { path: '/test', icon: 'Microphone', title: '检测', desc: '录音与比较' },
-  { path: '/archive', icon: 'FolderOpened', title: '我的档案', desc: '个人练习记录' },
-]
+/**
+ * 孩子导航（第 4 周 D：确认十页路由与儿童化文案位）
+ * ---------------------------------------------------------------------------
+ * 来源：src/data/pages.ts 的 CHILD_NAV_PAGES
+ *   - SRS D-15：孩子导航不含发音库（P06 仅家长路径 / CMS 预览）
+ *   - 结果页（P09）与后台（ADMIN）也不进孩子导航
+ * 标题用儿童化标题位（childTitle），副标题用 copy.subtitle，由 G 定稿后替换。
+ */
+const menuItems = CHILD_NAV_PAGES.map(p => ({
+  path: p.paths[0],
+  icon: p.icon,
+  title: p.childTitle,
+  desc: p.title,
+  code: p.code,
+}))
 
 const currentTitle = computed(() => {
   const byMeta = route.meta.title as string | undefined
   if (byMeta) return byMeta
   return '看得见的声音'
 })
+
+const currentPageCode = computed(() => (route.meta.pageCode as string | undefined) ?? '')
 
 function handleMenuClick(path: string) {
   router.push(path)
@@ -63,7 +72,10 @@ function handleMenuClick(path: string) {
     <main class="main-content">
       <header class="top-header">
         <div class="header-left">
-          <h2>{{ currentTitle }}</h2>
+          <h2>
+            {{ currentTitle }}
+            <span v-if="currentPageCode" class="page-code">{{ currentPageCode }}</span>
+          </h2>
           <el-breadcrumb separator="/">
             <el-breadcrumb-item :to="{ path: '/' }">首页</el-breadcrumb-item>
             <el-breadcrumb-item>{{ currentTitle }}</el-breadcrumb-item>
@@ -99,6 +111,7 @@ function handleMenuClick(path: string) {
 .main-content { flex: 1; display: flex; flex-direction: column; background: #f5f7fa; overflow: hidden; min-width: 0; }
 .top-header { background: white; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 1px 4px rgba(0,0,0,0.08); z-index: 10; flex-wrap: wrap; gap: 12px; }
 .header-left h2 { margin: 0 0 4px; font-size: 18px; color: #303133; }
+.page-code { margin-left: 6px; font-size: 11px; font-weight: 400; color: #909399; background: #f2f3f5; border-radius: 4px; padding: 1px 6px; vertical-align: middle; }
 .header-right { display: flex; gap: 8px; flex-wrap: wrap; }
 .page-content { flex: 1; overflow-y: auto; padding: 16px; }
 @media (max-width: 768px) {

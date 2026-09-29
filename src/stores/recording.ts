@@ -127,12 +127,29 @@ export const useRecordingStore = defineStore('recording', () => {
     }
   }
 
-  function stopRecording() {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop()
+  /**
+   * 停止录音。
+   * 返回 Promise：resolve 时录音 Blob 已经写进 store。
+   * 原因：MediaRecorder.stop() 之后 onstop 是异步触发的，如果"刚点停止就点分析"，
+   * analyzeRecording 会读到空的 audioBlob 而报「没有录音可分析」——这是录音→分析之间
+   * 的一个竞态，必须等 onstop 完成再分析。
+   */
+  function stopRecording(): Promise<void> {
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null }
     if (audioContext) { audioContext.close(); audioContext = null }
     recordingState.value.isRecording = false
     recordingState.value.isPaused = false
+    return new Promise<void>((resolve) => {
+      const recorder = mediaRecorder
+      if (!recorder || recorder.state === 'inactive') {
+        resolve()
+        return
+      }
+      // onstop（在 startRecording 里绑定，负责写入 Blob）先执行；await 的后续代码
+      // 会在整个事件派发结束后才跑，因此拿到的一定是本次录音的 Blob。
+      recorder.addEventListener('stop', () => resolve(), { once: true })
+      recorder.stop()
+    })
   }
 
   function clearRecording() {

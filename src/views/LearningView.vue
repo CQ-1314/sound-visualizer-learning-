@@ -1,94 +1,87 @@
 <script setup lang="ts">
-import { ref, onUnmounted, computed } from 'vue'
+/**
+ * P08 关卡页（第 4 周 D 交付：LearningView 关卡页骨架）
+ * ---------------------------------------------------------------------------
+ * 两种形态（同一个页号，列表 + 单关）：
+ *   - /learn         → 30 关 L01–L30 总览骨架（关卡身份来自 CON-02 冻结表）
+ *   - /learn/:id     → 单关骨架（示范 / 练习 / 检测开关 + 上一关下一关）
+ *
+ * 数据链路（D 接 C）：
+ *   CMS: GET /api/units?status=published  →  src/api/index.ts (levelsApi) → src/stores/levels.ts
+ *   冻结表: src/data/levels.ts（只提供 ID / 顺序 / 目标音 / 分组 / 例字 / 文案位）
+ *
+ * 未开放 / 只学不测的关：只显示状态说明，不出现录音按钮、不出现分数（禁止假分）。
+ * 历史单元（不在 30 关内）：落到 UnitLearningPanel，保留原有示范单元能力，不计入十页验收口径。
+ */
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { useLevelsStore } from '@/stores/levels'
 import { useRecordingStore } from '@/stores/recording'
 import { useUserStore } from '@/stores/user'
-import { getUnitMeta, isVerifiedUnit, getVerifiedUnitMeta, VERIFIED_UNIT_IDS } from '@/data/pinyinUnits'
+import { useSpeechDemo, TTS_DISCLAIMER } from '@/composables/useSpeechDemo'
+import { getPage } from '@/data/pages'
+import { getLevelNeighbors } from '@/data/levels'
+import UnitLearningPanel from '@/components/UnitLearningPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
+const levelsStore = useLevelsStore()
 const recordingStore = useRecordingStore()
 const userStore = useUserStore()
+const { speak, isPlaying: isDemoPlaying } = useSpeechDemo()
+const ttsDisclaimer = TTS_DISCLAIMER
 
-const unitData: Record<string, any> = {
-  ma: { pinyin: 'mā', character: '妈', tone: 1, desc: '双唇鼻音，第一声（阴平）', detail: '双唇紧闭，软腭下降，打开鼻腔通路，声带振动。声调保持高平。' },
-  ba: { pinyin: 'bā', character: '八', tone: 1, desc: '双唇清塞音，第一声', detail: '双唇紧闭，然后突然打开，气流冲出。不送气。' },
-  pa: { pinyin: 'pā', character: '趴', tone: 1, desc: '双唇清塞音，第一声', detail: '双唇紧闭，然后突然打开，气流冲出。送气。' },
-  ta: { pinyin: 'tā', character: '他', tone: 1, desc: '舌尖中清塞音，第一声', detail: '舌尖抵住上齿龈，然后突然放开。' },
-  yi: { pinyin: 'yī', character: '一', tone: 1, desc: '齐齿呼，第一声', detail: '口微开，上下齿对齐，舌面前部接近硬腭。' },
-  wu: { pinyin: 'wǔ', character: '五', tone: 3, desc: '合口呼，第三声', detail: '双唇拢圆，舌面后部隆起。声调先降后升。' },
-  yu: { pinyin: 'yú', character: '鱼', tone: 2, desc: '撮口呼，第二声', detail: '双唇拢圆，舌面前部接近硬腭。声调上升。' },
-  mao: { pinyin: 'māo', character: '猫', tone: 1, desc: '双唇鼻音+复韵母', detail: '先发m音，然后滑向ao。' },
-  gou: { pinyin: 'gǒu', character: '狗', tone: 3, desc: '舌根音+复韵母', detail: '舌根抵住软腭，然后放开，滑向ou。' },
-  niao: { pinyin: 'niǎo', character: '鸟', tone: 3, desc: '舌尖中音+复韵母', detail: '舌尖抵住上齿龈，鼻音，滑向iao。' },
-  ma_t2: { pinyin: 'má', character: '麻', tone: 2, desc: '双唇鼻音，第二声（阳平）', detail: '声调从中音升到高音。' },
-  ma_t3: { pinyin: 'mǎ', character: '马', tone: 3, desc: '双唇鼻音，第三声（上声）', detail: '声调先降后升。' },
-}
+/** 儿童化文案位：P08（D 留位，G / I 定稿） */
+const copy = getPage('P08')!.copy
 
-const unitId = computed(() => route.params.id as string)
-// 是否已通过验证、开放 AI 检测的核心单元（与后端 GROW-08 分级开放策略一致）
-const isVerified = computed(() => isVerifiedUnit(unitId.value))
-const verifiedMeta = computed(() => getVerifiedUnitMeta(unitId.value))
-// 优先取手工教学数据；未收录的拼音单元（发音库/地图全量单元）自动从共享数据兜底
-const unit = computed(() => {
-  const known = unitData[unitId.value]
-  if (known) {
-    // 核心对比单元使用验证清单中的展示拼音（如 u_u → u/ü，ma_tone → mā/má/mǎ/mà）
-    return { ...known, pinyin: verifiedMeta.value?.pinyin ?? known.pinyin }
-  }
-  const meta = getUnitMeta(unitId.value)
-  if (meta) {
-    return {
-      pinyin: verifiedMeta.value?.pinyin ?? meta.tone,
-      character: meta.char,
-      tone: 1,
-      desc: `${unitId.value} 发音练习`,
-      detail: '点击「播放示范」听标准发音，然后按下录音按钮练习。对照反馈页的评分与可视化结果不断改进。',
-    }
-  }
-  // 核心对比单元（如 b_p、d_t）不在拼音全量表中，从验证清单兜底
-  if (verifiedMeta.value) {
-    return {
-      pinyin: verifiedMeta.value.pinyin,
-      character: verifiedMeta.value.char,
-      tone: 1,
-      desc: `${verifiedMeta.value.desc}（核心对比单元）`,
-      detail: '对比单元需分别朗读多个目标音节，注意区分发音部位与送气/不送气、鼻音/边音等特征。',
-    }
-  }
-  return unitData.ma
-})
-const isPlaying = ref(false)
+const routeId = computed(() => (route.params.id as string | undefined) ?? '')
+const isListMode = computed(() => !routeId.value)
+const level = computed(() => (routeId.value ? levelsStore.getLevel(routeId.value) : undefined))
+/** 历史单元：有 id 但不在冻结的 30 关里 */
+const isLegacyUnit = computed(() => !!routeId.value && !level.value)
+
+/** 送后端分析的 unit_id：优先用 CMS 命中的 id（后端 UNIT_REFERENCE 按 CMS id 校验） */
+const activeUnitId = computed(() => level.value?.cmsId ?? '')
+const neighbors = computed(() => (level.value ? getLevelNeighbors(level.value.code) : {}))
+
 const canvasRef = ref<HTMLCanvasElement | null>(null)
-const pitchHistory = ref<number[]>([])
 let animationFrame: number | null = null
 
-function playDemo() {
-  if (!('speechSynthesis' in window)) {
-    alert('您的浏览器不支持语音合成功能')
-    return
-  }
-  isPlaying.value = true
-  // 取消之前的语音
-  speechSynthesis.cancel()
-  
-  const utterance = new SpeechSynthesisUtterance(unit.value.character)
-  utterance.lang = 'zh-CN'
-  utterance.rate = 0.8 // 稍慢，方便学习
-  utterance.pitch = 1.0
-  utterance.volume = 1.0
-  
-  // 尝试选择中文语音
-  const voices = speechSynthesis.getVoices()
-  const zhVoice = voices.find(v => v.lang.startsWith('zh'))
-  if (zhVoice) utterance.voice = zhVoice
-  
-  utterance.onend = () => { isPlaying.value = false }
-  utterance.onerror = () => { isPlaying.value = false }
-  speechSynthesis.speak(utterance)
+onMounted(() => {
+  if (!isLegacyUnit.value) levelsStore.fetchLevels()
+})
+onUnmounted(() => stopVisualization())
+
+function availabilityText(l: { availability: string }): string {
+  if (l.availability === 'open') return '可以练习 + 可以检测'
+  if (l.availability === 'learn_only') return '只学习，暂不检测'
+  return '未开放'
 }
 
+function availabilityTag(l: { availability: string }): 'success' | 'warning' | 'info' {
+  if (l.availability === 'open') return 'success'
+  if (l.availability === 'learn_only') return 'warning'
+  return 'info'
+}
+
+function openLevel(code: string) {
+  router.push(`/learn/${code}`)
+}
+
+function playDemo() {
+  const text = level.value?.unit?.character || level.value?.char
+  if (!text) return
+  speak(text, 'normal').catch(() => ElMessage.warning('这台设备暂时不能播放示范音，先跟着老师读一遍吧'))
+}
+
+function playSlow() {
+  const text = level.value?.unit?.character || level.value?.char
+  if (!text) return
+  speak(text, 'slow').catch(() => ElMessage.warning('慢速播放失败，稍后再试'))
+}
+
+/* ------------------------------ 录音 → 结果页闭环 ------------------------------ */
 async function startRecording() {
   await recordingStore.startRecording()
   startVisualization()
@@ -130,148 +123,341 @@ function stopVisualization() {
 }
 
 async function analyzeAndGoFeedback() {
-  stopRecording()
-  await recordingStore.analyzeRecording(unitId.value)
+  if (!activeUnitId.value) return
+  await recordingStore.stopRecording()
+  await recordingStore.analyzeRecording(activeUnitId.value)
   const assessment = recordingStore.assessment
-  // 自动保存：录音二进制 + 评估结果一并写入数据库，并联动更新学习进度/记录
+  // 分析失败 / 没拿到结果：就地给出原因并留在本页重录，绝不跳到空白结果页
+  if (recordingStore.error || !assessment) {
+    ElMessage.error(recordingStore.error || '分析没有返回结果，请重录一次')
+    return
+  }
   try {
     await userStore.addLearningRecord({
-      unitId: unitId.value,
-      pinyin: unit.value.pinyin,
-      character: unit.value.character,
-      score: assessment?.score || 0,
-      accuracy: assessment?.accuracy || 0,
-      fluency: assessment?.fluency || 0,
-      pronunciation: assessment?.pronunciation || 0,
+      unitId: activeUnitId.value,
+      pinyin: level.value?.unit?.pinyin || level.value?.pinyin || '',
+      character: level.value?.unit?.character || level.value?.char || '',
+      score: assessment.score || 0,
+      accuracy: assessment.accuracy || 0,
+      fluency: assessment.fluency || 0,
+      pronunciation: assessment.pronunciation || 0,
       duration: recordingStore.duration,
-      feedback: assessment?.feedback.map(f => f.message).join('; ') || '',
+      feedback: assessment.feedback.map(f => f.message).join('; ') || '',
       audioBlob: recordingStore.recordingState.audioBlob ?? new Blob(),
     })
-  } catch (err) {
-    // 保存失败不阻塞反馈展示，但明确提示
-    ElMessage.error('学习记录保存失败，请确认后端服务已启动')
+  } catch {
+    ElMessage.error('学习记录保存失败（分析结果仍会显示），请确认后端服务已启动')
   }
-  router.push(`/feedback/${unitId.value}`)
+  router.push(`/feedback/${activeUnitId.value}`)
 }
-
-onUnmounted(() => { stopVisualization() })
 </script>
 
 <template>
-  <div class="learning-view">
-    <!-- 顶部：发音教学区 -->
-    <div class="teaching-section">
-      <div class="unit-info">
-        <div class="unit-character">{{ unit.character }}</div>
-        <div class="unit-pinyin">
-          {{ unit.pinyin }}
-          <el-tag v-if="isVerified" type="success" size="small" effect="light" class="verify-tag">可检测</el-tag>
-          <el-tag v-else type="info" size="small" effect="light" class="verify-tag">仅学习</el-tag>
-        </div>
-        <div class="unit-desc">{{ unit.desc }}</div>
-        <p class="unit-detail">{{ unit.detail }}</p>
-      </div>
-      <div class="teaching-actions">
-        <el-button type="primary" :icon="'VideoPlay'" @click="playDemo" :loading="isPlaying">
-          {{ isPlaying ? '播放中...' : '播放示范' }}
-        </el-button>
-        <el-button :icon="'VideoPause'">慢速播放</el-button>
-      </div>
+  <!-- ============ 历史单元：不在 30 关冻结表内 ============ -->
+  <UnitLearningPanel v-if="isLegacyUnit" :unit-id="routeId" />
+
+  <!-- ============ 单关骨架 ============ -->
+  <div v-else-if="!isListMode" class="level-view">
+    <!-- 加载中（关卡身份来自冻结表，可先渲染；内容状态等 CMS 返回后再判，避免闪一下「未开放」） -->
+    <div v-if="levelsStore.loading && !levelsStore.loaded" class="state-card">
+      <el-skeleton :rows="3" animated />
+      <p class="state-text">{{ copy.loading }}</p>
     </div>
 
-    <!-- 中部：录音练习区 -->
-    <div class="recording-section">
-      <h3>录音练习</h3>
-      <template v-if="isVerified">
-        <div class="recording-controls">
-          <el-button
-            v-if="!recordingStore.isRecording"
-            type="danger"
-            :icon="'Microphone'"
-            size="large"
-            circle
-            @click="startRecording"
-            class="record-btn"
-          />
-          <el-button
-            v-else
-            type="info"
-            :icon="'VideoPause'"
-            size="large"
-            circle
-            @click="stopRecording"
-            class="record-btn recording"
-          />
-          <span class="record-time">{{ recordingStore.formattedDuration }}</span>
-        </div>
-        <canvas ref="canvasRef" width="600" height="120" class="waveform-canvas"></canvas>
-        <div v-if="recordingStore.hasRecording" class="record-actions">
-          <el-button :icon="'Refresh'" @click="recordingStore.clearRecording">重录</el-button>
-          <el-button type="primary" :icon="'DataAnalysis'" @click="analyzeAndGoFeedback" :loading="recordingStore.isAnalyzing">
-            {{ recordingStore.isAnalyzing ? '分析中...' : '分析发音' }}
-          </el-button>
-        </div>
-      </template>
-      <template v-else>
-        <div class="verify-hint">
-          <el-icon color="#e6a23c" :size="20"><Warning /></el-icon>
-          <div class="verify-hint-text">
-            <strong>该单元暂未开放 AI 检测</strong>
-            <p>当前仅开放 12 个核心对比单元的录音分析（附录 A）。本单元可播放示范跟读，如需获得评分与纠音反馈，请前往核心单元练习。</p>
+    <!-- 加载失败 -->
+    <div v-else-if="levelsStore.error" class="state-card">
+      <el-icon color="#e6a23c" :size="26"><Warning /></el-icon>
+      <p class="state-title">{{ copy.error }}</p>
+      <p class="state-text">{{ levelsStore.error }}</p>
+      <el-button type="primary" @click="levelsStore.fetchLevels(true)">重新加载</el-button>
+    </div>
+
+    <!-- 不在 30 关内的 id（兜底） -->
+    <div v-else-if="!level" class="state-card">
+      <el-icon color="#909399" :size="26"><QuestionFilled /></el-icon>
+      <p class="state-title">没有找到这一关</p>
+      <p class="state-text">{{ copy.empty }}</p>
+      <el-button type="primary" @click="router.push('/learn')">回到关卡列表</el-button>
+    </div>
+
+    <template v-else>
+      <!-- 关卡头部：身份（冻结表）+ 状态（CMS） -->
+      <div class="level-header card">
+        <div class="level-badge">{{ level.code }}</div>
+        <div class="level-identity">
+          <div class="level-target">
+            {{ level.target }}
+            <span class="level-pinyin">{{ level.unit?.pinyin || level.pinyin }}</span>
           </div>
-          <el-button type="primary" size="small" @click="router.push('/library')">去核心单元</el-button>
+          <div class="level-sub">
+            <el-tag size="small" effect="plain">{{ level.groupLabel }}</el-tag>
+            <span class="level-char">例字：{{ level.unit?.character || level.char }}</span>
+            <el-tag size="small" :type="availabilityTag(level)" effect="light">
+              {{ availabilityText(level) }}
+            </el-tag>
+          </div>
+          <p class="level-hint">{{ level.childHint }}</p>
         </div>
-      </template>
-    </div>
-
-    <!-- 底部：常见误区 -->
-    <div class="mistakes-section">
-      <h3>常见误区</h3>
-      <div class="mistake-list">
-        <div class="mistake-item" v-if="unitId === 'ma'">
-          <el-icon color="#e6a23c"><Warning /></el-icon>
-          <div><strong>声调不够高平</strong><p>保持声带张力稳定，不要在结尾下掉。</p></div>
-        </div>
-        <div class="mistake-item" v-if="unitId === 'ba'">
-          <el-icon color="#e6a23c"><Warning /></el-icon>
-          <div><strong>送气与不送气混淆</strong><p>b是不送气音，p是送气音。把手放在嘴前感受气流。</p></div>
-        </div>
-        <div class="mistake-item">
-          <el-icon color="#409eff"><InfoFilled /></el-icon>
-          <div><strong>练习建议</strong><p>先听示范3-5次，再尝试录音。录完后对比分析结果。</p></div>
+        <div class="level-actions">
+          <el-button type="primary" :icon="'VideoPlay'" :loading="isDemoPlaying" @click="playDemo">
+            听示范
+          </el-button>
+          <el-button :icon="'VideoPause'" @click="playSlow">慢速</el-button>
         </div>
       </div>
+
+      <!-- 未开放 / 只学不测：明确状态，不给检测入口、不给分数 -->
+      <el-alert
+        v-if="level.availability === 'unopened'"
+        class="card"
+        type="info"
+        show-icon
+        :closable="false"
+        :title="copy.unopened"
+        description="本关的内容还没通过审核发布，按 SRS 收缩规则记「未开放」：可以先练前面已经开放的关卡。"
+      />
+      <el-alert
+        v-else-if="level.availability === 'learn_only'"
+        class="card"
+        type="warning"
+        show-icon
+        :closable="false"
+        title="这一关只学习、不检测"
+        description="当前评分还不能稳定复现，所以不开放检测，也就不会给出分数。跟着示范读熟就好。"
+      />
+
+      <div class="level-body">
+        <!-- 示范 / 练习：内容来自 CMS -->
+        <div class="card block">
+          <h3>跟着读</h3>
+          <div v-if="level.unit">
+            <p class="block-text">{{ level.unit.conclusion || level.unit.description }}</p>
+            <p v-if="level.unit.detail" class="block-detail">{{ level.unit.detail }}</p>
+
+            <div v-if="level.unit.steps?.length" class="step-list">
+              <div v-for="(s, i) in level.unit.steps" :key="i" class="step-item">
+                <span class="step-index">{{ i + 1 }}</span>
+                <div>
+                  <strong>{{ s.title || s.text || '练习一步' }}</strong>
+                  <p v-if="s.text && s.title">{{ s.text }}</p>
+                  <p v-if="s.duration" class="step-duration">约 {{ s.duration }}</p>
+                </div>
+              </div>
+            </div>
+            <p v-else class="block-text muted">练习步骤位：等 CMS 录入这一关的练习内容（D 已留位，C 录入后自动显示）。</p>
+          </div>
+          <p v-else class="block-text muted">{{ copy.empty }}</p>
+        </div>
+
+        <!-- 检测：只有「已发布 + 已开放检测」才出现录音链路 -->
+        <div class="card block">
+          <h3>录音检测</h3>
+          <template v-if="level.detectionOpen && activeUnitId">
+            <div class="recording-controls">
+              <el-button
+                v-if="!recordingStore.isRecording"
+                type="danger"
+                :icon="'Microphone'"
+                size="large"
+                circle
+                class="record-btn"
+                @click="startRecording"
+              />
+              <el-button
+                v-else
+                type="info"
+                :icon="'VideoPause'"
+                size="large"
+                circle
+                class="record-btn recording"
+                @click="stopRecording"
+              />
+              <span class="record-time">{{ recordingStore.formattedDuration }}</span>
+            </div>
+            <canvas ref="canvasRef" width="600" height="120" class="waveform-canvas"></canvas>
+            <div v-if="recordingStore.hasRecording" class="record-actions">
+              <el-button :icon="'Refresh'" @click="recordingStore.clearRecording">重录</el-button>
+              <el-button
+                type="primary"
+                :icon="'DataAnalysis'"
+                :loading="recordingStore.isAnalyzing"
+                @click="analyzeAndGoFeedback"
+              >
+                {{ recordingStore.isAnalyzing ? '分析中…' : '看看读得怎么样' }}
+              </el-button>
+            </div>
+            <!-- 分析失败必须说清原因，不能静默（后端没起、麦克风异常、网络失败都在这里暴露） -->
+            <el-alert
+              v-if="recordingStore.error"
+              class="record-error"
+              type="error"
+              show-icon
+              :closable="false"
+              :title="recordingStore.error"
+              description="请确认后端已启动（npm run backend）、麦克风正常，然后点「重录」再试一次。"
+            />
+            <p class="disclaimer">{{ ttsDisclaimer }}</p>
+          </template>
+          <p v-else class="block-text muted">
+            {{ copy.unopened }}（检测开关由 CMS 的「已发布 + 已开放检测」决定，未满足时不出现录音入口，也不产生分数。）
+          </p>
+        </div>
+
+        <!-- 常见误区：内容来自 CMS -->
+        <div class="card block">
+          <h3>容易读错的地方</h3>
+          <div v-if="level.unit?.mistakes?.length" class="mistake-list">
+            <div v-for="(m, i) in level.unit.mistakes" :key="i" class="mistake-item">
+              <el-icon color="#e6a23c"><Warning /></el-icon>
+              <div>
+                <strong>{{ m.title || m.phenomenon || '注意' }}</strong>
+                <p>{{ m.text || m.hint || '' }}</p>
+              </div>
+            </div>
+          </div>
+          <p v-else class="block-text muted">误区文案位：等 G / I 定稿后由 CMS 录入。</p>
+        </div>
+      </div>
+
+      <!-- 关卡导航 -->
+      <div class="card level-nav">
+        <el-button :disabled="!neighbors.prev" @click="neighbors.prev && openLevel(neighbors.prev.code)">
+          ← 上一关 {{ neighbors.prev ? `${neighbors.prev.code} ${neighbors.prev.target}` : '' }}
+        </el-button>
+        <el-button @click="router.push('/learn')">全部 30 关</el-button>
+        <el-button :disabled="!neighbors.next" @click="neighbors.next && openLevel(neighbors.next.code)">
+          下一关 {{ neighbors.next ? `${neighbors.next.code} ${neighbors.next.target}` : '' }} →
+        </el-button>
+      </div>
+    </template>
+  </div>
+
+  <!-- ============ 30 关总览骨架 ============ -->
+  <div v-else class="levels-view">
+    <div class="card levels-header">
+      <div>
+        <h2>{{ copy.subtitle }}</h2>
+        <p class="levels-meta">
+          共 {{ levelsStore.levels.length }} 关 ·
+          可练可测 {{ levelsStore.openedCount }} ·
+          只学不测 {{ levelsStore.learnOnlyCount }} ·
+          未开放 {{ levelsStore.unopenedCount }}
+        </p>
+      </div>
+      <el-button :icon="'Refresh'" :loading="levelsStore.loading" @click="levelsStore.fetchLevels(true)">
+        刷新关卡
+      </el-button>
     </div>
+
+    <el-alert
+      v-if="levelsStore.error"
+      type="error"
+      show-icon
+      :closable="false"
+      :title="copy.error"
+      :description="levelsStore.error"
+    />
+
+    <el-skeleton v-if="levelsStore.loading && !levelsStore.levels.length" :rows="6" animated />
+
+    <template v-for="group in levelsStore.levelGroups" :key="group.key">
+      <div v-if="group.items.length" class="group-block">
+        <div class="group-title">
+          <span>{{ group.label }}</span>
+          <small>{{ group.items.length }} 关</small>
+        </div>
+        <div class="level-grid">
+          <div
+            v-for="l in group.items"
+            :key="l.code"
+            class="level-card"
+            :class="[`is-${l.availability}`]"
+            @click="openLevel(l.code)"
+          >
+            <div class="level-card-top">
+              <span class="level-card-code">{{ l.code }}</span>
+              <el-tag size="small" :type="availabilityTag(l)" effect="light">{{ availabilityText(l) }}</el-tag>
+            </div>
+            <div class="level-card-target">{{ l.target }}</div>
+            <div class="level-card-char">{{ l.unit?.character || l.char }}</div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <p class="levels-foot">
+      关卡身份（ID / 顺序 / 目标音）已按 CON-02 冻结；内容与检测开关以 CMS（C 的
+      <code>/api/units</code>）为准，未发布即「未开放」。
+    </p>
   </div>
 </template>
 
 <style scoped>
-.learning-view { display: flex; flex-direction: column; gap: 20px; }
-.teaching-section { background: white; border-radius: 12px; padding: 24px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
-.unit-info { flex: 1; }
-.unit-character { font-size: 72px; font-weight: 700; color: #303133; line-height: 1; }
-.unit-pinyin { font-size: 28px; color: #409eff; margin: 8px 0; display: flex; align-items: center; gap: 10px; }
-.verify-tag { flex-shrink: 0; }
-.unit-desc { font-size: 14px; color: #909399; }
-.unit-detail { font-size: 14px; color: #606266; margin-top: 8px; line-height: 1.6; }
-.teaching-actions { display: flex; flex-direction: column; gap: 8px; }
-.recording-section { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); text-align: center; }
-.recording-section h3 { margin: 0 0 16px; font-size: 16px; color: #303133; }
-.verify-hint { display: flex; align-items: center; gap: 12px; text-align: left; padding: 16px; background: #fdf6ec; border: 1px solid #faecd8; border-radius: 8px; }
-.verify-hint-text { flex: 1; }
-.verify-hint-text strong { color: #b88230; }
-.verify-hint-text p { margin: 4px 0 0; color: #8a6d3b; font-size: 13px; line-height: 1.6; }
-.recording-controls { display: flex; align-items: center; justify-content: center; gap: 16px; margin-bottom: 16px; }
-.record-btn { width: 64px; height: 64px; font-size: 24px; }
+.card { background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06); }
+.card + .card, .card + .el-alert, .el-alert + .level-body { margin-top: 16px; }
+
+/* ---- 状态卡 ---- */
+.state-card { background: #fff; border-radius: 12px; padding: 32px; text-align: center; box-shadow: 0 2px 12px rgba(0,0,0,0.06); display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.state-title { font-size: 16px; font-weight: 600; color: #303133; margin: 0; }
+.state-text { font-size: 13px; color: #909399; margin: 0; line-height: 1.7; }
+
+/* ---- 单关 ---- */
+.level-header { display: flex; align-items: center; gap: 20px; }
+.level-badge { flex: 0 0 auto; background: #409eff; color: #fff; font-weight: 700; font-size: 20px; border-radius: 12px; padding: 14px 18px; letter-spacing: 1px; }
+.level-identity { flex: 1; }
+.level-target { font-size: 40px; font-weight: 700; color: #303133; line-height: 1.1; }
+.level-pinyin { font-size: 20px; color: #409eff; margin-left: 12px; }
+.level-sub { display: flex; align-items: center; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
+.level-char { font-size: 13px; color: #606266; }
+.level-hint { margin: 8px 0 0; font-size: 14px; color: #606266; }
+.level-actions { display: flex; flex-direction: column; gap: 8px; }
+.level-body { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+.block h3 { margin: 0 0 12px; font-size: 16px; color: #303133; }
+.block-text { font-size: 14px; color: #303133; line-height: 1.7; margin: 0 0 8px; }
+.block-text.muted { color: #a8abb2; }
+.block-detail { font-size: 13px; color: #606266; line-height: 1.7; margin: 0 0 12px; }
+.disclaimer { margin: 12px 0 0; font-size: 12px; color: #a8abb2; }
+.level-nav { display: flex; justify-content: space-between; margin-top: 16px; }
+
+/* ---- 步骤 / 误区 ---- */
+.step-list, .mistake-list { display: flex; flex-direction: column; gap: 10px; }
+.step-item, .mistake-item { display: flex; gap: 10px; align-items: flex-start; background: #f5f7fa; border-radius: 8px; padding: 10px 12px; }
+.step-index { flex: 0 0 22px; height: 22px; border-radius: 50%; background: #409eff; color: #fff; font-size: 12px; display: flex; align-items: center; justify-content: center; }
+.step-item strong, .mistake-item strong { color: #303133; font-size: 14px; }
+.step-item p, .mistake-item p { margin: 2px 0 0; font-size: 13px; color: #606266; }
+.step-duration { color: #a8abb2 !important; }
+
+/* ---- 录音 ---- */
+.recording-controls { display: flex; align-items: center; gap: 16px; margin-bottom: 12px; }
+.record-btn { width: 60px; height: 60px; font-size: 22px; }
 .record-btn.recording { animation: pulse 1s infinite; }
-@keyframes pulse { 0%{transform:scale(1)} 50%{transform:scale(1.1)} 100%{transform:scale(1)} }
-.record-time { font-size: 24px; font-weight: 600; color: #303133; font-variant-numeric: tabular-nums; }
-.waveform-canvas { width: 100%; height: 120px; border-radius: 8px; background: #1a1a2e; }
-.record-actions { margin-top: 16px; display: flex; justify-content: center; gap: 12px; }
-.mistakes-section { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
-.mistakes-section h3 { margin: 0 0 16px; font-size: 16px; color: #303133; }
-.mistake-list { display: flex; flex-direction: column; gap: 12px; }
-.mistake-item { display: flex; gap: 12px; align-items: flex-start; padding: 12px; background: #f5f7fa; border-radius: 8px; }
-.mistake-item strong { color: #303133; }
-.mistake-item p { margin: 4px 0 0; color: #606266; font-size: 13px; }
+@keyframes pulse { 0% { transform: scale(1) } 50% { transform: scale(1.08) } 100% { transform: scale(1) } }
+.record-time { font-size: 22px; font-weight: 600; color: #303133; font-variant-numeric: tabular-nums; }
+.waveform-canvas { width: 100%; height: 110px; border-radius: 8px; background: #1a1a2e; }
+.record-actions { margin-top: 12px; display: flex; gap: 12px; }
+.record-error { margin-top: 12px; text-align: left; }
+
+/* ---- 列表 ---- */
+.levels-header { display: flex; justify-content: space-between; align-items: center; }
+.levels-header h2 { margin: 0; font-size: 18px; color: #303133; }
+.levels-meta { margin: 6px 0 0; font-size: 13px; color: #909399; }
+.group-block { margin-top: 20px; }
+.group-title { display: flex; align-items: baseline; gap: 8px; font-size: 15px; font-weight: 600; color: #303133; margin-bottom: 10px; }
+.group-title small { font-weight: 400; color: #a8abb2; }
+.level-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.level-card { background: #fff; border-radius: 12px; padding: 14px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); cursor: pointer; transition: transform .15s, box-shadow .15s; border: 1px solid transparent; }
+.level-card:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(0,0,0,0.1); }
+.level-card.is-unopened { opacity: .62; }
+.level-card.is-open { border-color: #b3e19d; }
+.level-card.is-learn_only { border-color: #f3d19e; }
+.level-card-top { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.level-card-code { font-size: 12px; color: #909399; letter-spacing: .5px; }
+.level-card-target { font-size: 30px; font-weight: 700; color: #303133; margin-top: 8px; }
+.level-card-char { font-size: 13px; color: #909399; margin-top: 2px; }
+.levels-foot { margin-top: 20px; font-size: 12px; color: #a8abb2; line-height: 1.7; }
+
+@media (max-width: 900px) {
+  .level-body { grid-template-columns: 1fr; }
+  .level-header { flex-direction: column; align-items: flex-start; }
+}
 </style>
