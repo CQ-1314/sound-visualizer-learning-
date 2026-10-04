@@ -6,6 +6,8 @@ import { useUnitsStore } from '@/stores/units'
 import { useUserStore } from '@/stores/user'
 import { feedbackApi } from '@/api'
 import { PLACE_FILTERS, METHOD_FILTERS, TAG_FILTERS } from '@/data/unitSearchMeta'
+import { usePageCopy } from '@/composables/usePageCopy'
+import PageState from '@/components/PageState.vue'
 import PageFeedback from '@/components/PageFeedback.vue'
 import SiteFooter from '@/components/SiteFooter.vue'
 
@@ -13,6 +15,9 @@ const route = useRoute()
 const router = useRouter()
 const unitsStore = useUnitsStore()
 const userStore = useUserStore()
+
+/** 儿童化文案位：P02（D 留位，G / I 定稿） */
+const { copy } = usePageCopy('P02')
 
 const requestText = ref('')
 const submitting = ref(false)
@@ -64,7 +69,7 @@ async function submitRequest() {
   <div class="search-view">
     <h2>搜索结果</h2>
     <p v-if="q" class="query">关键词：{{ q }}</p>
-    <p class="hint">支持汉字、拼音、IPA、声母/韵母、发音部位、发音方法与常见问题标签。</p>
+    <p class="hint">{{ copy.subtitle }}</p>
 
     <div class="filters">
       <el-select v-model="filterCategory" placeholder="类型" style="width: 120px">
@@ -84,17 +89,14 @@ async function submitRequest() {
       </el-select>
     </div>
 
-    <!-- 后端不可用 ≠ 没有内容：错误态要单独说清，否则会被误读成「搜不到」 -->
-    <div v-if="unitsStore.error" class="load-error">
-      <el-alert
-        type="error"
-        show-icon
-        :closable="false"
-        title="没连上后端，所以这里看起来是空的"
-        description="学习单元来自后端 /api/units。请先启动后端（npm run backend 或 npm run dev:all），再点右侧「重新加载」。"
-      />
-      <el-button type="primary" size="small" @click="unitsStore.fetchPublished()">重新加载</el-button>
-    </div>
+    <!-- 后端不可用 ≠ 没有内容：错误态走 P02 文案位，并把 store 的原始错误放进 detail，便于定位后端没起 -->
+    <PageState
+      v-if="unitsStore.error"
+      state="error"
+      :copy="copy"
+      :detail="unitsStore.error"
+      @action="unitsStore.fetchPublished()"
+    />
 
     <div v-if="results.length" class="result-list">
       <el-card v-for="u in results" :key="u.id" shadow="hover" class="result-card">
@@ -109,16 +111,19 @@ async function submitRequest() {
       </el-card>
     </div>
 
-    <div v-else class="empty">
-      <p>没有找到完全匹配的内容。</p>
-      <h3>相近内容</h3>
-      <div class="result-list">
-        <el-card v-for="u in similar" :key="u.id" shadow="hover" class="result-card">
-          <div class="head"><strong>{{ u.character }}</strong><span>{{ u.pinyin }}</span></div>
-          <p>{{ u.conclusion }}</p>
-          <el-button size="small" @click="router.push(`/learn/${u.id}`)">进入学习</el-button>
-        </el-card>
-      </div>
+    <!-- 空态：文案位只说「没找到」，相近内容与提交需求仍是现有功能，保留在下方 -->
+    <div v-else-if="!unitsStore.error" class="empty">
+      <PageState state="empty" :copy="copy" />
+      <template v-if="similar.length">
+        <h3>相近内容</h3>
+        <div class="result-list">
+          <el-card v-for="u in similar" :key="u.id" shadow="hover" class="result-card">
+            <div class="head"><strong>{{ u.character }}</strong><span>{{ u.pinyin }}</span></div>
+            <p>{{ u.conclusion }}</p>
+            <el-button size="small" @click="router.push(`/learn/${u.id}`)">进入学习</el-button>
+          </el-card>
+        </div>
+      </template>
       <el-button @click="router.push('/map')">返回发音地图</el-button>
       <div class="request-box">
         <h3>希望增加此内容</h3>
@@ -134,8 +139,6 @@ async function submitRequest() {
 
 <style scoped>
 .search-view { max-width: 800px; margin: 0 auto; }
-.load-error { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-.load-error :deep(.el-alert) { flex: 1; }
 .query, .hint { color: #909399; font-size: 13px; }
 .filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 16px; }
 .result-list { display: flex; flex-direction: column; gap: 12px; margin: 16px 0; }

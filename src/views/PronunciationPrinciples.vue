@@ -1,16 +1,26 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { PRINCIPLE_SECTIONS, PRO_TERMS_PREVIEW } from '@/data/principles'
+import { usePageCopy } from '@/composables/usePageCopy'
+import PageState from '@/components/PageState.vue'
 import PageFeedback from '@/components/PageFeedback.vue'
 import SiteFooter from '@/components/SiteFooter.vue'
 
 const router = useRouter()
+const { copy } = usePageCopy('P04')
+
+// 段落本身是真实文案（src/data/principles.ts），保留不动；
+// 只有内容缺失这种状态分支走文案位。
+const hasSections = computed(() => PRINCIPLE_SECTIONS.length > 0)
 </script>
 
 <template>
   <div class="principles-view">
     <h2>发音原理</h2>
-    <p class="intro">从呼吸到语言输出：先理解关系，再进入具体单元练习。</p>
+    <p class="intro">{{ copy.subtitle }}</p>
+
+    <PageState v-if="!hasSections" state="empty" :copy="copy" />
 
     <el-card class="overview-card">
       <h3>声音形成总图</h3>

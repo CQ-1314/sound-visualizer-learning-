@@ -11,6 +11,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useRecordingStore } from '@/stores/recording'
 import { useUserStore } from '@/stores/user'
+import { useDemoPlayer } from '@/composables/useDemoPlayer'
 import { getUnitMeta, isVerifiedUnit, getVerifiedUnitMeta } from '@/data/pinyinUnits'
 
 const props = defineProps<{ unitId: string }>()
@@ -65,31 +66,22 @@ const unit = computed(() => {
   }
   return unitData.ma
 })
-const isPlaying = ref(false)
+/**
+ * 示范音走全站统一的播放器（第 5 周 D 修复）
+ *   原实现自己写了一遍 speechSynthesis，且「慢速播放」按钮没有 @click 是死按钮；
+ *   这里改用 useDemoPlayer：有 CMS 正式示范音就播真实音频，没有才回落语音合成，
+ *   并如实挂上「非正式授权示范音」声明。
+ */
+const { play: playDemoSource, isPlaying, disclaimer: ttsDisclaimer } = useDemoPlayer()
+
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 let animationFrame: number | null = null
 
-function playDemo() {
-  if (!('speechSynthesis' in window)) {
-    alert('您的浏览器不支持语音合成功能')
-    return
-  }
-  isPlaying.value = true
-  speechSynthesis.cancel()
-
-  const utterance = new SpeechSynthesisUtterance(unit.value.character)
-  utterance.lang = 'zh-CN'
-  utterance.rate = 0.8
-  utterance.pitch = 1.0
-  utterance.volume = 1.0
-
-  const voices = speechSynthesis.getVoices()
-  const zhVoice = voices.find(v => v.lang.startsWith('zh'))
-  if (zhVoice) utterance.voice = zhVoice
-
-  utterance.onend = () => { isPlaying.value = false }
-  utterance.onerror = () => { isPlaying.value = false }
-  speechSynthesis.speak(utterance)
+function playDemo(slow = false) {
+  const text = unit.value.character
+  if (!text) return
+  playDemoSource(text, null, slow)
+    .catch(() => ElMessage.warning(slow ? '慢速播放失败，稍后再试' : '这台设备暂时不能播放示范音'))
 }
 
 async function startRecording() {
@@ -173,11 +165,13 @@ onUnmounted(() => { stopVisualization() })
         <p class="unit-detail">{{ unit.detail }}</p>
       </div>
       <div class="teaching-actions">
-        <el-button type="primary" :icon="'VideoPlay'" @click="playDemo" :loading="isPlaying">
+        <el-button type="primary" :icon="'VideoPlay'" @click="playDemo(false)" :loading="isPlaying">
           {{ isPlaying ? '播放中...' : '播放示范' }}
         </el-button>
-        <el-button :icon="'VideoPause'">慢速播放</el-button>
+        <!-- 第 5 周 D 修复：这个按钮原来没有 @click，是死按钮 -->
+        <el-button :icon="'VideoPause'" @click="playDemo(true)">慢速播放</el-button>
       </div>
+      <p class="demo-disclaimer">{{ ttsDisclaimer }}</p>
     </div>
 
     <!-- 中部：录音练习区 -->
@@ -256,6 +250,8 @@ onUnmounted(() => { stopVisualization() })
 .unit-desc { font-size: 14px; color: #909399; }
 .unit-detail { font-size: 14px; color: #606266; margin-top: 8px; line-height: 1.6; }
 .teaching-actions { display: flex; flex-direction: column; gap: 8px; }
+/* 示范音来源声明：没有 CMS 正式示范音时必须如实标注是语音合成示意 */
+.demo-disclaimer { flex-basis: 100%; margin: 10px 0 0; font-size: 12px; color: #a8abb2; }
 .recording-section { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); text-align: center; }
 .recording-section h3 { margin: 0 0 16px; font-size: 16px; color: #303133; }
 .verify-hint { display: flex; align-items: center; gap: 12px; text-align: left; padding: 16px; background: #fdf6ec; border: 1px solid #faecd8; border-radius: 8px; }

@@ -1,13 +1,26 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUnitsStore } from '@/stores/units'
 import { FAQ_ITEMS, HOME_ACTIONS } from '@/data/coreUnits'
+import { usePageCopy } from '@/composables/usePageCopy'
+import PageState from '@/components/PageState.vue'
 import SiteFooter from '@/components/SiteFooter.vue'
 
 const router = useRouter()
 const unitsStore = useUnitsStore()
 const searchQuery = ref('')
+
+/** 儿童化文案位：P01（D 留位，G / I 定稿） */
+const { copy } = usePageCopy('P01')
+
+/** 单元区状态：loading / error / empty 三态互斥，加载完成且确实没有单元才算空 */
+const unitsState = computed<'loading' | 'error' | 'empty' | null>(() => {
+  if (unitsStore.loading) return 'loading'
+  if (unitsStore.error) return 'error'
+  if (!unitsStore.coreUnits.length) return 'empty'
+  return null
+})
 
 onMounted(() => unitsStore.fetchPublished())
 
@@ -67,8 +80,17 @@ function goFaq(item: typeof FAQ_ITEMS[number]) {
 
     <section class="units">
       <h2>首批学习单元（12个）</h2>
-      <p class="hint">仅展示已完成并发布的单元，不含空卡片或「敬请期待」。</p>
-      <div class="unit-grid" v-loading="unitsStore.loading">
+      <p class="subtitle">{{ copy.subtitle }}</p>
+
+      <!-- 单元区的加载 / 错误 / 空态统一走文案位：后端没连上要说清，不能让人误以为「就是没有内容」 -->
+      <PageState
+        :state="unitsState"
+        :copy="copy"
+        :detail="unitsStore.error || undefined"
+        @action="unitsStore.fetchPublished()"
+      />
+
+      <div v-if="unitsStore.coreUnits.length" class="unit-grid">
         <el-card
           v-for="u in unitsStore.coreUnits"
           :key="u.id"
@@ -113,7 +135,7 @@ function goFaq(item: typeof FAQ_ITEMS[number]) {
 .faq h2, .units h2 { margin: 0 0 12px; font-size: 18px; }
 .faq-list { display: grid; gap: 10px; }
 .faq-card { cursor: pointer; }
-.hint { color: #909399; font-size: 13px; margin: 0 0 12px; }
+.hint, .subtitle { color: #909399; font-size: 13px; margin: 0 0 12px; }
 .unit-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
 .unit-card { cursor: pointer; text-align: center; }
 .char { font-size: 36px; font-weight: 700; }

@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { audioAnalysisApi } from '@/api'
 import type { RecordingState, AudioAnalysisResult, PronunciationAssessment, FeedbackItem } from '@/types'
 
 function mapFeedback(raw: any[]): FeedbackItem[] {
@@ -170,12 +171,9 @@ export const useRecordingStore = defineStore('recording', () => {
     analysisResult.value = null
     assessment.value = null
     try {
-      const formData = new FormData()
-      formData.append('audio', recordingState.value.audioBlob, 'recording.webm')
-      formData.append('unit_id', unitId)
-      const response = await fetch('http://localhost:8000/api/audio/analyze', { method: 'POST', body: formData })
-      if (!response.ok) throw new Error(`服务器错误: ${response.status}`)
-      const result = await response.json()
+      // 走统一的网络层（src/api/index.ts 的 audioAnalysisApi），不再硬编码后端地址。
+      // analyzeRaw 会保留后端 400 时的中文说明，不会压成「服务器错误: 400」。
+      const result = await audioAnalysisApi.analyzeRaw(recordingState.value.audioBlob, unitId)
       if (result.code === 200 && result.data) {
         const mapped = mapAssessment(result.data)
         assessment.value = mapped

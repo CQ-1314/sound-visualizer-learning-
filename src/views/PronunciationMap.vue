@@ -5,11 +5,16 @@ import { useUnitsStore } from '@/stores/units'
 import { useSpeechDemo } from '@/composables/useSpeechDemo'
 import { buildMapNodes, LAYER_LABELS, LAYER_ORDER, type MapNode, type MapLayer } from '@/data/mapNodes'
 import { PLACE_FILTERS, METHOD_FILTERS } from '@/data/unitSearchMeta'
+import { usePageCopy } from '@/composables/usePageCopy'
+import PageState from '@/components/PageState.vue'
 import PageFeedback from '@/components/PageFeedback.vue'
 
 const router = useRouter()
 const unitsStore = useUnitsStore()
 const speech = useSpeechDemo()
+
+/** 儿童化文案位：P03（D 留位，G / I 定稿） */
+const { copy } = usePageCopy('P03')
 
 const selectedNode = ref<MapNode | null>(null)
 const drawerOpen = computed({
@@ -27,6 +32,18 @@ const proExpanded = ref<string[]>([])
 onMounted(() => unitsStore.fetchPublished())
 
 const allNodes = computed(() => buildMapNodes(unitsStore.coreUnits))
+
+/**
+ * 地图节点区状态：loading → error → empty 三态互斥。
+ * 后端不可用时必须走 error（不能让人误判成「地图上就是没有关卡」），
+ * 加载完成且确实构不出节点才算 empty。
+ */
+const mapState = computed<'loading' | 'error' | 'empty' | null>(() => {
+  if (unitsStore.loading) return 'loading'
+  if (unitsStore.error) return 'error'
+  if (!allNodes.value.length) return 'empty'
+  return null
+})
 
 const filteredNodes = computed(() => {
   return allNodes.value.filter(n => {
@@ -49,6 +66,9 @@ const nodesByLayer = computed(() => {
   }
   return map
 })
+
+/** 节点存在但被当前筛选条件滤空：只在网格区提示，不动地图主体与筛选栏 */
+const filterEmpty = computed(() => !mapState.value && !filteredNodes.value.length)
 
 const similarNodes = computed(() => {
   if (!selectedNode.value) return []
@@ -81,87 +101,86 @@ async function playDemo(char: string) {
   <div class="pronunciation-map">
     <header class="map-header">
       <h3>发音地图</h3>
-      <p>看清声母、韵母、声调、音节与汉字之间的关系；点击节点查看详情并进入学习。</p>
+      <p>{{ copy.subtitle }}</p>
     </header>
 
-    <!-- 后端不可用 ≠ 地图为空：错误态单独提示（D 小改，地图主体仍属 E） -->
-    <div v-if="unitsStore.error" class="load-error">
-      <el-alert
-        type="error"
-        show-icon
-        :closable="false"
-        title="没连上后端，所以地图上是 0 项"
-        description="地图节点来自后端 /api/units。请先启动后端（npm run backend 或 npm run dev:all），再点右侧「重新加载」。"
-      />
-      <el-button type="primary" size="small" @click="unitsStore.fetchPublished()">重新加载</el-button>
-    </div>
+    <!-- 加载 / 错误 / 空态统一走 P03 文案位：后端不可用必须说成 error，不能让人误读成「地图上就是没有关卡」 -->
+    <PageState
+      :state="mapState"
+      :copy="copy"
+      :detail="mapState === 'error' ? (unitsStore.error || undefined) : undefined"
+      @action="unitsStore.fetchPublished()"
+    />
 
-    <!-- MAP-01 总览：声母→韵母→声调→音节→汉字 -->
-    <section class="overview card">
-      <h4>发音层级关系</h4>
-      <div class="flow-chain">
-        <template v-for="(layer, idx) in LAYER_ORDER" :key="layer">
-          <button
-            class="flow-node"
-            :class="{ active: activeLayer === layer }"
-            @click="activeLayer = activeLayer === layer ? 'all' : layer"
-          >
-            <span class="flow-label">{{ LAYER_LABELS[layer] }}</span>
-            <span class="flow-count">{{ nodesByLayer.get(layer)?.length || 0 }} 项</span>
-          </button>
-          <span v-if="idx < LAYER_ORDER.length - 1" class="flow-arrow">→</span>
-        </template>
-      </div>
-      <p class="flow-hint">声母与韵母组合成音节，叠加声调后对应汉字；「妈」单元覆盖完整闭环。</p>
-    </section>
-
-    <!-- MAP-02 分类筛选 -->
-    <section class="filters card">
-      <h4>分类筛选</h4>
-      <div class="filter-row">
-        <el-select v-model="filterPlace" placeholder="发音部位" clearable style="width: 140px">
-          <el-option v-for="p in PLACE_FILTERS" :key="p" :label="p" :value="p" />
-        </el-select>
-        <el-select v-model="filterMethod" placeholder="发音方法" clearable style="width: 140px">
-          <el-option v-for="m in METHOD_FILTERS" :key="m" :label="m" :value="m" />
-        </el-select>
-        <el-select v-model="filterAspiration" placeholder="送气/不送气" clearable style="width: 140px">
-          <el-option label="送气" value="送气" />
-          <el-option label="不送气" value="不送气" />
-        </el-select>
-        <el-select v-model="filterNasal" placeholder="口音/鼻音" clearable style="width: 130px">
-          <el-option label="鼻音" value="鼻音" />
-          <el-option label="口音" value="口音" />
-        </el-select>
-        <el-select v-model="filterTone" placeholder="声调" clearable style="width: 120px">
-          <el-option label="四声" value="四声" />
-          <el-option label="阴平" value="阴平" />
-        </el-select>
-        <el-button @click="clearFilters">重置</el-button>
-      </div>
-    </section>
-
-    <!-- 节点网格 -->
-    <section class="nodes-section">
-      <div v-for="layer in LAYER_ORDER" :key="layer" v-show="activeLayer === 'all' || activeLayer === layer" class="layer-block">
-        <h4 v-if="activeLayer === 'all'">{{ LAYER_LABELS[layer] }}</h4>
-        <div class="node-grid">
-          <el-card
-            v-for="node in nodesByLayer.get(layer)"
-            :key="node.id"
-            shadow="hover"
-            class="map-node"
-            :class="{ selected: selectedNode?.id === node.id }"
-            @click="selectNode(node)"
-          >
-            <div class="char">{{ node.character }}</div>
-            <div class="py">{{ node.pinyin }}</div>
-            <div class="ipa">{{ node.meta.ipa }}</div>
-          </el-card>
+    <template v-if="!mapState">
+      <!-- MAP-01 总览：声母→韵母→声调→音节→汉字 -->
+      <section class="overview card">
+        <h4>发音层级关系</h4>
+        <div class="flow-chain">
+          <template v-for="(layer, idx) in LAYER_ORDER" :key="layer">
+            <button
+              class="flow-node"
+              :class="{ active: activeLayer === layer }"
+              @click="activeLayer = activeLayer === layer ? 'all' : layer"
+            >
+              <span class="flow-label">{{ LAYER_LABELS[layer] }}</span>
+              <span class="flow-count">{{ nodesByLayer.get(layer)?.length || 0 }} 项</span>
+            </button>
+            <span v-if="idx < LAYER_ORDER.length - 1" class="flow-arrow">→</span>
+          </template>
         </div>
-      </div>
-      <el-empty v-if="!filteredNodes.length" description="没有符合筛选条件的节点，请调整筛选或重置。" />
-    </section>
+        <p class="flow-hint">声母与韵母组合成音节，叠加声调后对应汉字；「妈」单元覆盖完整闭环。</p>
+      </section>
+
+      <!-- MAP-02 分类筛选 -->
+      <section class="filters card">
+        <h4>分类筛选</h4>
+        <div class="filter-row">
+          <el-select v-model="filterPlace" placeholder="发音部位" clearable style="width: 140px">
+            <el-option v-for="p in PLACE_FILTERS" :key="p" :label="p" :value="p" />
+          </el-select>
+          <el-select v-model="filterMethod" placeholder="发音方法" clearable style="width: 140px">
+            <el-option v-for="m in METHOD_FILTERS" :key="m" :label="m" :value="m" />
+          </el-select>
+          <el-select v-model="filterAspiration" placeholder="送气/不送气" clearable style="width: 140px">
+            <el-option label="送气" value="送气" />
+            <el-option label="不送气" value="不送气" />
+          </el-select>
+          <el-select v-model="filterNasal" placeholder="口音/鼻音" clearable style="width: 130px">
+            <el-option label="鼻音" value="鼻音" />
+            <el-option label="口音" value="口音" />
+          </el-select>
+          <el-select v-model="filterTone" placeholder="声调" clearable style="width: 120px">
+            <el-option label="四声" value="四声" />
+            <el-option label="阴平" value="阴平" />
+          </el-select>
+          <el-button @click="clearFilters">重置</el-button>
+        </div>
+      </section>
+
+      <!-- 节点网格 -->
+      <section class="nodes-section">
+        <div v-for="layer in LAYER_ORDER" :key="layer" v-show="activeLayer === 'all' || activeLayer === layer" class="layer-block">
+          <h4 v-if="activeLayer === 'all'">{{ LAYER_LABELS[layer] }}</h4>
+          <div class="node-grid">
+            <el-card
+              v-for="node in nodesByLayer.get(layer)"
+              :key="node.id"
+              shadow="hover"
+              class="map-node"
+              :class="{ selected: selectedNode?.id === node.id }"
+              @click="selectNode(node)"
+            >
+              <div class="char">{{ node.character }}</div>
+              <div class="py">{{ node.pinyin }}</div>
+              <div class="ipa">{{ node.meta.ipa }}</div>
+            </el-card>
+          </div>
+        </div>
+        <!-- 节点被当前筛选条件滤空：同一套文案位，只有网格区提示 -->
+        <PageState v-if="filterEmpty" state="empty" :copy="copy" compact :show-action="false" />
+      </section>
+    </template>
 
     <!-- MAP-03 节点详情 -->
     <el-drawer v-model="drawerOpen" :title="selectedNode?.character || '发音详情'" size="420px" direction="rtl">
@@ -215,8 +234,6 @@ async function playDemo(char: string) {
 .pronunciation-map { max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
 .map-header h3 { margin: 0; font-size: 20px; }
 .map-header p { margin: 8px 0 0; color: #909399; font-size: 14px; }
-.load-error { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
-.load-error :deep(.el-alert) { flex: 1; }
 .card { background: #fff; border-radius: 12px; padding: 16px 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
 .overview h4, .filters h4, .layer-block h4 { margin: 0 0 12px; font-size: 15px; color: #303133; }
 .flow-chain { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

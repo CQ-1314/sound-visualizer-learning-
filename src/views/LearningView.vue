@@ -19,8 +19,9 @@ import { ElMessage } from 'element-plus'
 import { useLevelsStore } from '@/stores/levels'
 import { useRecordingStore } from '@/stores/recording'
 import { useUserStore } from '@/stores/user'
-import { useSpeechDemo, TTS_DISCLAIMER } from '@/composables/useSpeechDemo'
-import { getPage } from '@/data/pages'
+import { useDemoPlayer } from '@/composables/useDemoPlayer'
+import { usePageCopy } from '@/composables/usePageCopy'
+import PageState from '@/components/PageState.vue'
 import { getLevelNeighbors } from '@/data/levels'
 import UnitLearningPanel from '@/components/UnitLearningPanel.vue'
 
@@ -29,11 +30,16 @@ const router = useRouter()
 const levelsStore = useLevelsStore()
 const recordingStore = useRecordingStore()
 const userStore = useUserStore()
-const { speak, isPlaying: isDemoPlaying } = useSpeechDemo()
-const ttsDisclaimer = TTS_DISCLAIMER
+/**
+ * 示范音播放（第 5 周 D 交付：关卡页至少一关示范可播放）
+ *   有 CMS 正式示范音 unit.demoAudio → 播真实音频；
+ *   没有 → 回落浏览器语音合成，并挂「非正式授权示范音」声明。
+ * C 补 demo_audio 列并发布后，前端不需要再改代码。
+ */
+const { play: playDemoSource, isPlaying: isDemoPlaying, disclaimer: ttsDisclaimer } = useDemoPlayer()
 
-/** 儿童化文案位：P08（D 留位，G / I 定稿） */
-const copy = getPage('P08')!.copy
+/** 儿童化文案位：P08（唯一登记处 src/data/pages.ts，G / I 定稿后只改那一处） */
+const { copy } = usePageCopy('P08')
 
 const routeId = computed(() => (route.params.id as string | undefined) ?? '')
 const isListMode = computed(() => !routeId.value)
@@ -44,6 +50,12 @@ const isLegacyUnit = computed(() => !!routeId.value && !level.value)
 /** 送后端分析的 unit_id：优先用 CMS 命中的 id（后端 UNIT_REFERENCE 按 CMS id 校验） */
 const activeUnitId = computed(() => level.value?.cmsId ?? '')
 const neighbors = computed(() => (level.value ? getLevelNeighbors(level.value.code) : {}))
+
+/**
+ * 本关是否只能用语音合成示意。
+ * true → 页面上必须挂 TTS 声明，不把合成音冒充正式授权示范音（SRS 要求如实标注）。
+ */
+const demoIsSynthetic = computed(() => !level.value?.unit?.demoAudio)
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 let animationFrame: number | null = null
@@ -69,16 +81,21 @@ function openLevel(code: string) {
   router.push(`/learn/${code}`)
 }
 
+/** 示范朗读文本：优先 CMS 的例字，其次冻结表的例字 */
+const demoText = computed(() => level.value?.unit?.character || level.value?.char || '')
+
 function playDemo() {
-  const text = level.value?.unit?.character || level.value?.char
+  const text = demoText.value
   if (!text) return
-  speak(text, 'normal').catch(() => ElMessage.warning('这台设备暂时不能播放示范音，先跟着老师读一遍吧'))
+  playDemoSource(text, level.value?.unit?.demoAudio, false)
+    .catch(() => ElMessage.warning('这台设备暂时不能播放示范音，先跟着老师读一遍吧'))
 }
 
 function playSlow() {
-  const text = level.value?.unit?.character || level.value?.char
+  const text = demoText.value
   if (!text) return
-  speak(text, 'slow').catch(() => ElMessage.warning('慢速播放失败，稍后再试'))
+  playDemoSource(text, level.value?.unit?.demoAudio, true)
+    .catch(() => ElMessage.warning('慢速播放失败，稍后再试'))
 }
 
 /* ------------------------------ 录音 → 结果页闭环 ------------------------------ */
@@ -160,24 +177,28 @@ async function analyzeAndGoFeedback() {
   <div v-else-if="!isListMode" class="level-view">
     <!-- 加载中（关卡身份来自冻结表，可先渲染；内容状态等 CMS 返回后再判，避免闪一下「未开放」） -->
     <div v-if="levelsStore.loading && !levelsStore.loaded" class="state-card">
-      <el-skeleton :rows="3" animated />
-      <p class="state-text">{{ copy.loading }}</p>
+      <PageState state="loading" :copy="copy" />
     </div>
 
-    <!-- 加载失败 -->
+    <!-- 加载失败：说清是后端没连上，不让人误判成「这一关不存在」 -->
     <div v-else-if="levelsStore.error" class="state-card">
-      <el-icon color="#e6a23c" :size="26"><Warning /></el-icon>
-      <p class="state-title">{{ copy.error }}</p>
-      <p class="state-text">{{ levelsStore.error }}</p>
-      <el-button type="primary" @click="levelsStore.fetchLevels(true)">重新加载</el-button>
+      <PageState
+        state="error"
+        :copy="copy"
+        :detail="levelsStore.error"
+        action-text="重新加载"
+        @action="levelsStore.fetchLevels(true)"
+      />
     </div>
 
     <!-- 不在 30 关内的 id（兜底） -->
     <div v-else-if="!level" class="state-card">
-      <el-icon color="#909399" :size="26"><QuestionFilled /></el-icon>
-      <p class="state-title">没有找到这一关</p>
-      <p class="state-text">{{ copy.empty }}</p>
-      <el-button type="primary" @click="router.push('/learn')">回到关卡列表</el-button>
+      <PageState
+        state="empty"
+        :copy="copy"
+        action-text="回到关卡列表"
+        @action="router.push('/learn')"
+      />
     </div>
 
     <template v-else>
@@ -205,6 +226,10 @@ async function analyzeAndGoFeedback() {
           <el-button :icon="'VideoPause'" @click="playSlow">慢速</el-button>
         </div>
       </div>
+
+      <!-- 示范音来源如实标注：有正式授权示范音就说明，没有就明说这是合成示意，不冒充 -->
+      <p v-if="demoIsSynthetic" class="disclaimer demo-source">{{ ttsDisclaimer }}</p>
+      <p v-else class="disclaimer demo-source is-real">示范音来自 CMS 已审核发布的正式录音。</p>
 
       <!-- 未开放 / 只学不测：明确状态，不给检测入口、不给分数 -->
       <el-alert
@@ -244,7 +269,7 @@ async function analyzeAndGoFeedback() {
                 </div>
               </div>
             </div>
-            <p v-else class="block-text muted">练习步骤位：等 CMS 录入这一关的练习内容（D 已留位，C 录入后自动显示）。</p>
+            <p v-else class="block-text muted">{{ copy.empty }}</p>
           </div>
           <p v-else class="block-text muted">{{ copy.empty }}</p>
         </div>
@@ -296,10 +321,9 @@ async function analyzeAndGoFeedback() {
               :title="recordingStore.error"
               description="请确认后端已启动（npm run backend）、麦克风正常，然后点「重录」再试一次。"
             />
-            <p class="disclaimer">{{ ttsDisclaimer }}</p>
           </template>
           <p v-else class="block-text muted">
-            {{ copy.unopened }}（检测开关由 CMS 的「已发布 + 已开放检测」决定，未满足时不出现录音入口，也不产生分数。）
+            {{ copy.unopened }}
           </p>
         </div>
 
@@ -315,7 +339,7 @@ async function analyzeAndGoFeedback() {
               </div>
             </div>
           </div>
-          <p v-else class="block-text muted">误区文案位：等 G / I 定稿后由 CMS 录入。</p>
+          <p v-else class="block-text muted">{{ copy.empty }}</p>
         </div>
       </div>
 
@@ -349,16 +373,20 @@ async function analyzeAndGoFeedback() {
       </el-button>
     </div>
 
-    <el-alert
+    <PageState
       v-if="levelsStore.error"
-      type="error"
-      show-icon
-      :closable="false"
-      :title="copy.error"
-      :description="levelsStore.error"
+      state="error"
+      :copy="copy"
+      :detail="levelsStore.error"
+      action-text="重新加载"
+      @action="levelsStore.fetchLevels(true)"
     />
 
-    <el-skeleton v-if="levelsStore.loading && !levelsStore.levels.length" :rows="6" animated />
+    <PageState
+      v-else-if="levelsStore.loading && !levelsStore.levels.length"
+      state="loading"
+      :copy="copy"
+    />
 
     <template v-for="group in levelsStore.levelGroups" :key="group.key">
       <div v-if="group.items.length" class="group-block">
@@ -417,6 +445,8 @@ async function analyzeAndGoFeedback() {
 .block-text.muted { color: #a8abb2; }
 .block-detail { font-size: 13px; color: #606266; line-height: 1.7; margin: 0 0 12px; }
 .disclaimer { margin: 12px 0 0; font-size: 12px; color: #a8abb2; }
+.demo-source { margin: 8px 2px 0; }
+.demo-source.is-real { color: #67c23a; }
 .level-nav { display: flex; justify-content: space-between; margin-top: 16px; }
 
 /* ---- 步骤 / 误区 ---- */

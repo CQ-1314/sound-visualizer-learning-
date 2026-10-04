@@ -8,13 +8,103 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js'
 import { getUnitMeta } from '@/data/pinyinUnits'
 import PageFeedback from '@/components/PageFeedback.vue'
+import PageState from '@/components/PageState.vue'
+import { usePageCopy } from '@/composables/usePageCopy'
+import { useUserStore } from '@/stores/user'
+import { learningRecordApi } from '@/api'
+import { ElMessage } from 'element-plus'
+import type { LearningRecord } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
 const recordingStore = useRecordingStore()
+const userStore = useUserStore()
+const { copy } = usePageCopy('P09')
 
 const unitId = computed(() => route.params.id as string)
 const assessment = computed(() => recordingStore.assessment)
+
+// =============================================
+// 刷新 / 直开本页时的结果恢复
+// 分析结果（含 F0/MFCC/共振峰/能量）只存在于前端内存，LearningRecord 里没有
+// audioAnalysis，所以恢复出来的只能是「上次练习结果」的分数与文字反馈，图表无法恢复。
+// 状态机：idle/loading（请求中）→ done（有记录）/ empty（该关无记录）/ error（接口失败）
+// =============================================
+type RestoreState = 'idle' | 'loading' | 'done' | 'empty' | 'error'
+
+const restoreState = ref<RestoreState>('idle')
+const restoreError = ref('')
+const lastRecord = ref<LearningRecord | null>(null)
+const isPlaying = ref(false)
+
+// 播放中的 blob URL 与音频实例，卸载/重播前都要释放，避免内存泄漏
+let audioEl: HTMLAudioElement | null = null
+let audioUrl: string | null = null
+
+function stopAudio() {
+  if (audioEl) {
+    audioEl.pause()
+    audioEl = null
+  }
+  if (audioUrl) {
+    URL.revokeObjectURL(audioUrl)
+    audioUrl = null
+  }
+  isPlaying.value = false
+}
+
+// 恢复该关最近一次练习记录：取用户记录 → 筛当前 unitId → 按 createdAt 倒序取最新一条
+async function restoreLastRecord() {
+  restoreState.value = 'loading'
+  restoreError.value = ''
+  try {
+    const res = await learningRecordApi.getByUser(userStore.userId, 50)
+    const mine = (res.data || [])
+      .filter(r => r.unitId === unitId.value)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    const latest = mine[0] ?? null
+    if (!latest) {
+      lastRecord.value = null
+      restoreState.value = 'empty'
+      return
+    }
+    lastRecord.value = latest
+    restoreState.value = 'done'
+  } catch (err) {
+    lastRecord.value = null
+    restoreError.value = err instanceof Error ? err.message : String(err)
+    restoreState.value = 'error'
+  }
+}
+
+// 同一组件内切换关卡（/feedback/a → /feedback/b）时重新恢复，避免停留在上一关的记录
+watch(unitId, () => {
+  if (assessment.value) return
+  stopAudio()
+  lastRecord.value = null
+  void restoreLastRecord()
+})
+
+// 按需拉取录音 blob URL 播放（后端 /learning-records/{id}/audio）
+async function playLastRecord() {
+  const record = lastRecord.value
+  if (!record) return
+  try {
+    stopAudio()
+    const url = await learningRecordApi.getRecordAudio(record.id)
+    const el = new Audio(url)
+    el.onended = () => { isPlaying.value = false }
+    el.onerror = () => { isPlaying.value = false }
+    audioUrl = url
+    audioEl = el
+    isPlaying.value = true
+    await el.play()
+  } catch (err) {
+    console.error(err)
+    stopAudio()
+    ElMessage.error(copy.error)
+  }
+}
 
 const toneChartRef = ref<HTMLDivElement | null>(null)
 const threeContainerRef = ref<HTMLDivElement | null>(null)
@@ -797,12 +887,15 @@ function initEnergyChart() {
   })
 }
 
-const scoreColor = computed(() => {
-  const s = assessment.value?.score || 0
-  if (s >= 80) return '#67c23a'
-  if (s >= 60) return '#e6a23c'
+function scoreColorOf(score: number) {
+  if (score >= 80) return '#67c23a'
+  if (score >= 60) return '#e6a23c'
   return '#f56c6c'
-})
+}
+
+const scoreColor = computed(() => scoreColorOf(assessment.value?.score || 0))
+// 恢复出来的「上次练习结果」也沿用同一套分数配色
+const lastScoreColor = computed(() => scoreColorOf(lastRecord.value?.score || 0))
 
 // 数据图表统一渲染（声调/声谱/共振峰/能量），重绘前已做 dispose 防护
 function renderDataCharts() {
@@ -816,6 +909,11 @@ function renderDataCharts() {
 let disposeThree: (() => void) | null = null
 
 onMounted(async () => {
+  // 内存里没有本次分析结果（刷新 / 直开本页 / 上次分析失败）→ 从后端学习记录里恢复
+  if (!assessment.value) {
+    void restoreLastRecord()
+  }
+
   // 等待DOM渲染完成后再初始化图表
   await nextTick()
   setTimeout(() => {
@@ -827,6 +925,7 @@ onMounted(async () => {
 onUnmounted(() => {
   disposeThree?.()
   disposeThree = null
+  stopAudio()
 })
 
 // 当后端分析结果到达（可能晚于组件挂载）时重绘数据图表，避免空白
@@ -842,18 +941,63 @@ watch(
 
 <template>
   <div class="feedback-view">
-    <!-- 没有结果时的明确状态：分析结果只保存在内存里，刷新页面 / 直接打开本页 /
-         上一次分析失败，都会走到这里。绝不留空白页（这是「点了分析没反馈」的真实原因）。 -->
-    <div v-if="!assessment" class="card-block no-result">
-      <el-alert
-        type="info"
-        show-icon
-        :closable="false"
-        title="这里还没有这一关的分析结果"
-        description="分析结果只在本次录音之后保留：刷新页面、直接打开本页、或上一次分析失败时都会看不到。请回到关卡页重新录一次。"
-      />
+    <!-- 没有内存结果时的恢复流程：分析结果只保存在内存里，刷新页面 / 直接打开本页 /
+         上一次分析失败都会走到这里。三种情况分别是「请求中」「该关无记录」「接口失败」，
+         绝不留空白页（这是「点了分析没反馈」的真实原因）。文案统一走 P09 文案位。 -->
+    <PageState
+      v-if="!assessment && (restoreState === 'idle' || restoreState === 'loading')"
+      state="loading"
+      :copy="copy"
+      class="card-block"
+    />
+
+    <PageState
+      v-else-if="!assessment && restoreState === 'error'"
+      state="error"
+      :copy="copy"
+      :detail="restoreError"
+      class="card-block"
+      @action="restoreLastRecord"
+    />
+
+    <!-- 有记录：渲染上次练习结果（分数 + 文字反馈，图表无法恢复） -->
+    <div v-else-if="!assessment && restoreState === 'done' && lastRecord" class="card-block last-result">
+      <div class="last-result-head">
+        <h3>上次练习结果</h3>
+        <span class="last-result-time">{{ new Date(lastRecord.createdAt).toLocaleString() }}</span>
+      </div>
+      <p class="last-result-note">{{ copy.subtitle }}</p>
+
+      <div class="last-result-main">
+        <div class="last-result-word">
+          <span class="last-char">{{ lastRecord.character || unitId }}</span>
+          <span v-if="lastRecord.pinyin" class="last-pinyin">{{ lastRecord.pinyin }}</span>
+        </div>
+        <div class="last-result-score">
+          <span class="last-score-number" :style="{ color: lastScoreColor }">{{ Math.round(lastRecord.score) }}</span>
+          <span class="last-score-label">总分</span>
+        </div>
+      </div>
+
+      <div class="last-result-metrics">
+        <div class="score-item"><span>准确度</span><el-progress :percentage="Math.round(lastRecord.accuracy)" color="#409eff" /></div>
+        <div class="score-item"><span>流利度</span><el-progress :percentage="Math.round(lastRecord.fluency)" color="#67c23a" /></div>
+        <div class="score-item"><span>发音</span><el-progress :percentage="Math.round(lastRecord.pronunciation)" color="#e6a23c" /></div>
+      </div>
+
+      <p v-if="lastRecord.feedback" class="last-result-feedback">{{ lastRecord.feedback }}</p>
+
+      <div class="last-result-actions">
+        <el-button type="primary" :loading="isPlaying" @click="playLastRecord">播放上次录音</el-button>
+        <el-button @click="router.push(`/learn/${unitId}`)">回关卡重新录音</el-button>
+        <el-button @click="router.push('/archive')">看我的档案</el-button>
+      </div>
+    </div>
+
+    <!-- 没有任何该关记录（以及其它兜底情况）：给出回关卡重录的入口 -->
+    <div v-else-if="!assessment" class="card-block no-result">
+      <PageState state="empty" :copy="copy" @action="router.push(`/learn/${unitId}`)" />
       <div class="no-result-actions">
-        <el-button type="primary" @click="router.push(`/learn/${unitId}`)">回关卡重新录音</el-button>
         <el-button @click="router.push('/test')">去检测中心</el-button>
         <el-button @click="router.push('/learn')">看全部 30 关</el-button>
       </div>
@@ -1005,6 +1149,21 @@ watch(
 <style scoped>
 .feedback-view { display: flex; flex-direction: column; gap: 20px; }
 .no-result-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+/* 上次练习结果（刷新 / 直开后从学习记录恢复） */
+.last-result-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.last-result-head h3 { margin: 0; font-size: 16px; color: #303133; }
+.last-result-time { font-size: 12px; color: #909399; }
+.last-result-note { margin: 8px 0 16px; font-size: 13px; color: #909399; }
+.last-result-main { display: flex; align-items: center; gap: 40px; }
+.last-result-word { display: flex; align-items: baseline; gap: 10px; }
+.last-char { font-size: 40px; font-weight: 700; color: #303133; }
+.last-pinyin { font-size: 16px; color: #4a7a9a; }
+.last-result-score { display: flex; flex-direction: column; align-items: center; }
+.last-score-number { font-size: 36px; font-weight: 700; }
+.last-score-label { font-size: 12px; color: #909399; }
+.last-result-metrics { display: flex; flex-direction: column; gap: 12px; margin-top: 20px; }
+.last-result-feedback { margin: 16px 0 0; padding: 12px 16px; background: #f5f7fa; border-radius: 8px; font-size: 13px; color: #606266; }
+.last-result-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
 .card-block { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06); }
 .headline-label { font-size: 13px; color: #909399; margin: 0; }
 .headline { margin: 8px 0 12px; font-size: 20px; color: #303133; }

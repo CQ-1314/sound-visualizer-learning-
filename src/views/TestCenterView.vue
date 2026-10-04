@@ -7,7 +7,9 @@ import { useUnitsStore } from '@/stores/units'
 import { useUserStore } from '@/stores/user'
 import { useArchiveConsent } from '@/composables/useArchiveConsent'
 import { useSpeechDemo } from '@/composables/useSpeechDemo'
+import { usePageCopy } from '@/composables/usePageCopy'
 import { CORE_UNIT_IDS } from '@/data/coreUnits'
+import PageState from '@/components/PageState.vue'
 import PageFeedback from '@/components/PageFeedback.vue'
 
 const route = useRoute()
@@ -18,20 +20,67 @@ const userStore = useUserStore()
 const { consented } = useArchiveConsent()
 const speech = useSpeechDemo()
 
+/** 儿童化文案位：P05（D 留位，G / I 定稿） */
+const { copy } = usePageCopy('P05')
+
 const unitId = ref(String(route.query.unit || 'ma'))
 const envOk = ref(false)
 const authOk = ref(false)
 const countdown = ref(0)
 const unit = ref<any>(null)
+const micError = ref<string | null>(null)
+const saveError = ref<string | null>(null)
 
 const verifiedTasks = computed(() =>
   unitsStore.coreUnits.filter(u => u.verified && CORE_UNIT_IDS.includes(u.id as any))
 )
 
-onMounted(async () => {
+/**
+ * 任务加载状态：loading → error → 空。
+ * 已发布单元里一个都没通过检测验证 → unopened（按 SRS 收缩规则，不是整版失败）；
+ * 连已发布单元都没有 → empty。
+ */
+const loadState = computed<'loading' | 'error' | 'empty' | 'unopened' | null>(() => {
+  if (unitsStore.loading) return 'loading'
+  if (unitsStore.error) return 'error'
+  if (verifiedTasks.value.length) return null
+  return unitsStore.coreUnits.length ? 'unopened' : 'empty'
+})
+
+/** 分析阶段状态：正在分析 → loading；分析或落库失败 → error（原始错误进 detail） */
+const analysisState = computed<'loading' | 'error' | null>(() => {
+  if (recordingStore.isAnalyzing) return 'loading'
+  if (recordingStore.error || saveError.value) return 'error'
+  return null
+})
+
+const analysisDetail = computed(() => {
+  if (saveError.value) return `本轮结果未能保存到学习记录：${saveError.value}`
+  return recordingStore.error || undefined
+})
+
+async function loadUnits() {
   await unitsStore.fetchPublished()
   unit.value = await unitsStore.getUnit(unitId.value)
-})
+}
+
+/** 加载 / 错误 / 未开放态下的主按钮：未开放时切到第一个可检测任务，其余重新拉取单元 */
+function handleLoadAction() {
+  if (loadState.value === 'unopened') {
+    const first = verifiedTasks.value[0]
+    if (first) selectTask(first.id)
+    return
+  }
+  loadUnits()
+}
+
+/** 分析失败后的主按钮：清掉本轮错误，回到「重录 → 再提交」 */
+function retryAnalysis() {
+  saveError.value = null
+  recordingStore.clearError()
+}
+
+onMounted(loadUnits)
 
 async function selectTask(id: string) {
   unitId.value = id
@@ -44,15 +93,17 @@ async function checkMic() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     authOk.value = true
+    micError.value = null
     stream.getTracks().forEach(t => t.stop())
-  } catch {
-    ElMessage.error('麦克风未授权。请在浏览器地址栏允许麦克风后重试。')
+  } catch (e: any) {
+    micError.value = e?.message || String(e)
+    ElMessage.error(`${copy.error} 麦克风未授权：${micError.value}`)
   }
 }
 
 async function startTest() {
   if (!envOk.value || !authOk.value) {
-    ElMessage.warning('请先确认环境安静并完成麦克风授权')
+    ElMessage.warning(copy.error)
     return
   }
   countdown.value = 3
@@ -67,7 +118,15 @@ async function startTest() {
 
 async function submit() {
   await recordingStore.stopRecording() // 等录音 Blob 就绪，避免竞态取到空录音
-  await recordingStore.analyzeRecording(unitId.value)
+  saveError.value = null
+  try {
+    await recordingStore.analyzeRecording(unitId.value)
+  } catch (e: any) {
+    // 分析链路的异常仍按文案位提示，原始信息留在 detail
+    saveError.value = e?.message || String(e)
+    ElMessage.error(copy.error)
+    return
+  }
   if (recordingStore.error) {
     ElMessage.error(recordingStore.error)
     return
@@ -87,7 +146,12 @@ async function submit() {
         feedback: a.feedback.map(f => f.phenomenon).join('; '),
         audioBlob: recordingStore.recordingState.audioBlob ?? new Blob(),
       })
-    } catch { /* 不阻塞 */ }
+    } catch (e: any) {
+      // 落库失败不阻塞：分析结果已在内存里（P09 会照常完整展示样式与图表），
+      // 但必须如实告知这次练习没进档案，不能静默——与关卡页 LearningView 的口径一致。
+      saveError.value = e?.message || String(e)
+      ElMessage.error(`分析结果仍会显示，但这次练习没能存进档案：${saveError.value}`)
+    }
   }
   router.push(`/feedback/${unitId.value}`)
 }
@@ -96,76 +160,79 @@ async function submit() {
 <template>
   <div class="test-center">
     <h2>检测中心</h2>
-    <p class="intro">仅开放已通过验证的检测任务；首页、单元页与检测中心进入同一任务时，结果口径一致。</p>
+    <p class="intro">{{ copy.subtitle }}</p>
 
-    <!-- TEST-01 任务选择 -->
-    <el-card class="step-card">
-      <h4>1. 选择任务</h4>
-      <el-radio-group v-model="unitId" @change="selectTask">
-        <el-radio v-for="t in verifiedTasks" :key="t.id" :value="t.id" border class="task-radio">
-          {{ t.character }}（{{ t.pinyin }}）
-        </el-radio>
-      </el-radio-group>
-    </el-card>
-
-    <el-card v-if="unit" class="task-card">
-      <h3>任务：{{ unit.character }}（{{ unit.pinyin }}）</h3>
-      <p>{{ unit.conclusion }}</p>
-      <p class="meta">请朗读：{{ unit.character.split('/')[0] }} · 预计约 30 秒</p>
-    </el-card>
-
-    <!-- TEST-02 示范 -->
-    <el-card class="step-card">
-      <h4>2. 听示范</h4>
-      <el-button @click="speech.speak(unit?.character?.split('/')[0] || '妈', 'normal')">正常速度</el-button>
-      <el-button @click="speech.speak(unit?.character?.split('/')[0] || '妈', 'slow')">慢速</el-button>
-      <p class="tts-note">{{ speech.disclaimer }}</p>
-    </el-card>
-
-    <!-- TEST-03 环境检查 -->
-    <el-card class="step-card">
-      <h4>3. 环境检查</h4>
-      <el-checkbox v-model="envOk">我已确认环境安静、麦克风距离约 10–20 cm、设备正常</el-checkbox>
-    </el-card>
-
-    <!-- TEST-04/05 用途与授权 -->
-    <el-card class="step-card">
-      <h4>4. 用途说明与麦克风授权</h4>
-      <p>录音用于本次检测分析。{{ consented ? '已同意保存到个人档案。' : '未同意前不会长期保存，也不用于研究或模型训练。' }}</p>
-      <el-button @click="checkMic">请求麦克风权限</el-button>
-      <el-tag v-if="authOk" type="success" style="margin-left:8px">已授权</el-tag>
-      <p v-else class="hint">若拒绝授权，请在浏览器设置中开启麦克风后刷新页面。</p>
-    </el-card>
-
-    <!-- TEST-06 录音 -->
-    <el-card class="step-card">
-      <h4>5. 录音</h4>
-      <div v-if="countdown > 0" class="countdown">{{ countdown }}</div>
-      <el-button v-if="!recordingStore.isRecording" type="danger" @click="startTest">开始录音</el-button>
-      <el-button v-else type="info" @click="recordingStore.stopRecording()">停止</el-button>
-      <audio v-if="recordingStore.audioUrl" :src="recordingStore.audioUrl" controls class="playback" />
-      <div class="actions">
-        <el-button @click="recordingStore.clearRecording()">重录</el-button>
-        <el-button type="primary" :disabled="!recordingStore.hasRecording" :loading="recordingStore.isAnalyzing" @click="submit">提交分析</el-button>
-      </div>
-    </el-card>
-
-    <!-- TEST-07 处理状态 -->
-    <el-alert
-      v-if="recordingStore.isAnalyzing"
-      type="info"
-      title="正在检查与分析录音…"
-      description="包含录音质量检测与发音分析，请稍候。"
-      show-icon
-      :closable="false"
+    <!-- 任务加载 / 错误 / 未开放统一走 P05 文案位：后端没连上要说清，不能让人误读成「就是没有任务」 -->
+    <PageState
+      :state="loadState"
+      :copy="copy"
+      :detail="loadState === 'error' ? (unitsStore.error || undefined) : undefined"
+      @action="handleLoadAction"
     />
-    <el-alert
-      v-if="recordingStore.error"
-      type="error"
-      :title="recordingStore.error"
-      description="请检查后端服务是否启动、麦克风是否正常，然后重录。"
-      show-icon
-    />
+
+    <template v-if="!loadState">
+      <!-- TEST-01 任务选择 -->
+      <el-card class="step-card">
+        <h4>1. 选择任务</h4>
+        <el-radio-group v-model="unitId" @change="selectTask">
+          <el-radio v-for="t in verifiedTasks" :key="t.id" :value="t.id" border class="task-radio">
+            {{ t.character }}（{{ t.pinyin }}）
+          </el-radio>
+        </el-radio-group>
+      </el-card>
+
+      <el-card v-if="unit" class="task-card">
+        <h3>任务：{{ unit.character }}（{{ unit.pinyin }}）</h3>
+        <p>{{ unit.conclusion }}</p>
+        <p class="meta">请朗读：{{ unit.character.split('/')[0] }} · 预计约 30 秒</p>
+      </el-card>
+
+      <!-- TEST-02 示范 -->
+      <el-card class="step-card">
+        <h4>2. 听示范</h4>
+        <el-button @click="speech.speak(unit?.character?.split('/')[0] || '妈', 'normal')">正常速度</el-button>
+        <el-button @click="speech.speak(unit?.character?.split('/')[0] || '妈', 'slow')">慢速</el-button>
+        <p class="tts-note">{{ speech.disclaimer }}</p>
+      </el-card>
+
+      <!-- TEST-03 环境检查 -->
+      <el-card class="step-card">
+        <h4>3. 环境检查</h4>
+        <el-checkbox v-model="envOk">我已确认环境安静、麦克风距离约 10–20 cm、设备正常</el-checkbox>
+      </el-card>
+
+      <!-- TEST-04/05 用途与授权 -->
+      <el-card class="step-card">
+        <h4>4. 用途说明与麦克风授权</h4>
+        <p>录音用于本次检测分析。{{ consented ? '已同意保存到个人档案。' : '未同意前不会长期保存，也不用于研究或模型训练。' }}</p>
+        <el-button @click="checkMic">请求麦克风权限</el-button>
+        <el-tag v-if="authOk" type="success" style="margin-left:8px">已授权</el-tag>
+        <p v-else class="hint">若拒绝授权，请在浏览器设置中开启麦克风后刷新页面。</p>
+        <p v-if="micError" class="hint mic-error">授权失败原因：{{ micError }}</p>
+      </el-card>
+
+      <!-- TEST-06 录音 -->
+      <el-card class="step-card">
+        <h4>5. 录音</h4>
+        <div v-if="countdown > 0" class="countdown">{{ countdown }}</div>
+        <el-button v-if="!recordingStore.isRecording" type="danger" @click="startTest">{{ copy.cta }}</el-button>
+        <el-button v-else type="info" @click="recordingStore.stopRecording()">停止</el-button>
+        <audio v-if="recordingStore.audioUrl" :src="recordingStore.audioUrl" controls class="playback" />
+        <div class="actions">
+          <el-button @click="recordingStore.clearRecording()">重录</el-button>
+          <el-button type="primary" :disabled="!recordingStore.hasRecording" :loading="recordingStore.isAnalyzing" @click="submit">提交分析</el-button>
+        </div>
+      </el-card>
+
+      <!-- TEST-07 处理状态：分析与分析失败都走文案位，原始错误进 detail -->
+      <PageState
+        :state="analysisState"
+        :copy="copy"
+        :detail="analysisState === 'error' ? analysisDetail : undefined"
+        :show-action="analysisState === 'error'"
+        @action="retryAnalysis"
+      />
+    </template>
 
     <PageFeedback page="test-center" :unit-id="unitId" type="result" />
   </div>
@@ -176,6 +243,7 @@ async function submit() {
 .intro { color: #606266; font-size: 14px; margin: 0; }
 .task-card h3 { margin: 0 0 8px; }
 .meta, .tts-note, .hint { font-size: 13px; color: #909399; }
+.mic-error { color: #c45656; }
 .step-card h4 { margin: 0 0 12px; }
 .task-radio { margin: 4px 8px 4px 0; }
 .countdown { font-size: 48px; font-weight: 700; text-align: center; color: #409eff; }
