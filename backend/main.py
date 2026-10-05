@@ -362,10 +362,25 @@ async def analyze_audio_file(
         if suffix in [".webm", ".ogg", ".mp3"]:
             wav_path = tmp_path + ".wav"
             import subprocess
-            result = subprocess.run(
-                ["ffmpeg", "-i", tmp_path, "-ar", "16000", "-ac", "1", "-y", wav_path],
-                capture_output=True, text=True
-            )
+            try:
+                result = subprocess.run(
+                    ["ffmpeg", "-i", tmp_path, "-ar", "16000", "-ac", "1", "-y", wav_path],
+                    capture_output=True, text=True
+                )
+            except FileNotFoundError:
+                # 服务端没装 ffmpeg。浏览器录的是 webm/ogg（opus），librosa/soundfile
+                # 解不了，必须先转 wav。这是部署环境问题，必须把话说清楚，
+                # 否则会被误判成「后端没启动」或「录音有问题」（实测踩过）。
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "code": 500,
+                        "message": (
+                            "服务端缺少 ffmpeg：浏览器录音（webm/ogg）需要先转成 wav 才能分析。"
+                            "请在服务器上安装 ffmpeg 并确保它在 PATH 中，然后点「重录」再试一次。"
+                        ),
+                    },
+                )
             if result.returncode != 0:
                 print(f"FFmpeg转换失败: {result.stderr}")
                 # 如果转换失败，尝试直接加载
