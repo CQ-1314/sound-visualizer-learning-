@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useUnitsStore } from '@/stores/units'
 import { FAQ_ITEMS, HOME_ACTIONS } from '@/data/coreUnits'
 import { usePageCopy } from '@/composables/usePageCopy'
+import { PAGES, type PageDef } from '@/data/pages'
 import PageState from '@/components/PageState.vue'
 import SiteFooter from '@/components/SiteFooter.vue'
 
@@ -34,6 +35,44 @@ function goAction(action: typeof HOME_ACTIONS[number]) {
 
 function goFaq(item: typeof FAQ_ITEMS[number]) {
   router.push({ path: '/search', query: { q: item.keyword } })
+}
+
+/**
+ * 家长入口 + 十页总览（第 5 周 D 交付）
+ * ---------------------------------------------------------------------------
+ * 为什么要加：侧边栏（App.vue）按 SRS D-15 只放孩子端 7 页，于是
+ *   发音库 P06（/library）只有结果页一个「返回发音库」按钮能进，
+ *   专业资料 P07（/materials）**全站零入口**，只能手输网址。
+ *   结果页 P09（/feedback/:id）是流程页，本来也不该从导航进。
+ * 这里在首页把十页列全并可直接点进去，孩子导航本身保持不动（D-15 不变）。
+ */
+interface PageRow extends PageDef {
+  /** 可点击打开的首个 path（去掉带参数的，流程页不直接打开） */
+  path: string
+  openable: boolean
+  role: string
+  roleType: 'success' | 'warning' | 'info'
+}
+
+const tenPages: PageRow[] = PAGES.map(p => {
+  const first = p.paths[0] ?? '/'
+  const isParent = p.code === 'P06' || p.code === 'P07'
+  const isFlow = p.code === 'P09'
+  return {
+    ...p,
+    path: first,
+    // 路径里带 :id 的是流程页，必须由上一页带参进入，不能凭空打开
+    openable: !first.includes(':'),
+    role: isFlow ? '流程页' : isParent ? '家长' : '孩子端',
+    roleType: isFlow ? 'info' : isParent ? 'warning' : 'success',
+  }
+})
+
+/** 家长向的两页：给自己一个显式入口，不用去翻十页表 */
+const parentPages = tenPages.filter(p => p.role === '家长')
+
+function openPage(p: PageRow) {
+  if (p.openable) router.push(p.path)
 }
 </script>
 
@@ -114,6 +153,48 @@ function goFaq(item: typeof FAQ_ITEMS[number]) {
       </el-card>
     </section>
 
+    <section class="parents">
+      <h2>家长入口</h2>
+      <p class="subtitle">
+        发音库和专业资料是给家长看的，按 SRS D-15 不放进孩子导航（侧边栏），从这里进。
+      </p>
+      <div class="parent-actions">
+        <el-button
+          v-for="p in parentPages"
+          :key="p.code"
+          size="large"
+          class="parent-btn"
+          @click="router.push(p.path)"
+        >
+          <strong>{{ p.title }}</strong>
+          <span>{{ p.childTitle }} · {{ p.path }}</span>
+        </el-button>
+      </div>
+    </section>
+
+    <section class="pages-index">
+      <h2>十页总览（P01–P10）</h2>
+      <p class="subtitle">
+        页号与网址的唯一登记处是 <code>src/data/pages.ts</code>，这里按登记表把十页列全，方便逐页验收与跳转。
+      </p>
+      <div class="page-list">
+        <div
+          v-for="p in tenPages"
+          :key="p.code"
+          class="page-row"
+          :class="{ 'is-disabled': !p.openable }"
+          @click="openPage(p)"
+        >
+          <span class="page-code">{{ p.code }}</span>
+          <code class="page-path">{{ p.path }}</code>
+          <span class="page-title">{{ p.title }}</span>
+          <span class="page-child">{{ p.childTitle }}</span>
+          <el-tag size="small" :type="p.roleType" effect="plain">{{ p.role }}</el-tag>
+        </div>
+      </div>
+      <p class="meta">「流程页」不直接打开：检测结果页（P09）需要先录一次音、由上一页带上关卡参数进入。</p>
+    </section>
+
     <section class="profile-entry">
       <el-button text type="primary" @click="router.push('/archive')">进入我的声音档案 →</el-button>
       <span class="guest-hint">未登录也可临时体验；保存记录需先同意隐私说明。</span>
@@ -146,4 +227,25 @@ function goFaq(item: typeof FAQ_ITEMS[number]) {
 .meta { font-size: 12px; color: #909399; }
 .profile-entry { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .guest-hint { font-size: 13px; color: #909399; }
+
+/* ---- 家长入口 / 十页总览（第 5 周 D）---- */
+.parents h2, .pages-index h2 { margin: 0 0 8px; font-size: 18px; }
+.parent-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.parent-btn { height: auto; padding: 14px 16px; display: flex; flex-direction: column; align-items: flex-start; text-align: left; white-space: normal; }
+.parent-btn strong { font-size: 16px; margin-bottom: 4px; }
+.parent-btn span { font-size: 12px; color: #909399; font-weight: normal; }
+.page-list { display: flex; flex-direction: column; border: 1px solid #ebeef5; border-radius: 10px; overflow: hidden; background: #fff; }
+.page-row { display: grid; grid-template-columns: 56px 150px 1fr 1fr 76px; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; border-bottom: 1px solid #f2f3f5; font-size: 14px; }
+.page-row:last-child { border-bottom: none; }
+.page-row:hover { background: #f5f7fa; }
+.page-row.is-disabled { cursor: default; opacity: .55; }
+.page-row.is-disabled:hover { background: transparent; }
+.page-code { font-size: 12px; color: #909399; letter-spacing: .5px; }
+.page-path { background: #f2f3f5; border-radius: 5px; padding: 2px 8px; font-size: 12px; color: #409eff; justify-self: start; }
+.page-title { color: #303133; }
+.page-child { color: #909399; font-size: 13px; }
+@media (max-width: 700px) {
+  .page-row { grid-template-columns: 48px 1fr 76px; }
+  .page-path, .page-child { display: none; }
+}
 </style>
