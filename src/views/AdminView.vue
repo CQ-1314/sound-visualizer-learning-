@@ -184,6 +184,14 @@ async function handleFeedback(id: string, status: 'adopted' | 'rejected') {
           <el-select v-model="editingUnit.status"><el-option label="草稿" value="draft" /><el-option label="已发布" value="published" /></el-select>
         </el-form-item>
         <el-form-item label="已验证"><el-switch v-model="editingUnit.verified" /></el-form-item>
+        <!-- 第 5 周 D：示范音字段。
+             前置条件：需 C 先在 pronunciation_units 里加 demo_audio 列，并在 _unit_to_dict
+             以 demoAudio 返回，这里录入的地址才会真正生效；否则后端会忽略该字段。
+             未填写时，关卡页「听示范」回落为浏览器语音合成，并如实标注「非正式授权示范音」。 -->
+        <el-form-item label="示范音">
+          <el-input v-model="editingUnit.demoAudio" placeholder="已审核发布的示范音地址，例如 /api/media/{id}/file" />
+          <p class="field-note">填入后关卡页直接播真实录音；留空则用语音合成示意。</p>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -198,4 +206,5 @@ async function handleFeedback(id: string, status: 'adopted' | 'rejected') {
 .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 .stat-val { font-size: 24px; font-weight: 700; }
 .stat-lbl { color: #909399; font-size: 13px; }
+.field-note { margin: 4px 0 0; font-size: 12px; color: #a8abb2; line-height: 1.5; }
 </style>

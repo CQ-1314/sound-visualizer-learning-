@@ -204,6 +204,27 @@ export const unitsApi = {
   },
 }
 
+// 关卡 API（30 关 L01–L30 · 第 4 周 D 交付：接 C 的 /api/units）
+//
+// 说明：本项目前端已统一走上面的 request() 封装层（基于 fetch，承担 axios 的封装职责：
+// 统一 baseURL / 请求头 / 错误抛出），因此这里复用同一层，不额外引入 axios 依赖，
+// 避免 1.0 期出现两套网络层。
+export const levelsApi = {
+  /**
+   * 关卡列表。
+   * @param status '' = 全部（后台 CMS 用）；'published' = 仅已发布（大众端关卡页用，
+   *   未审核内容不公开）
+   */
+  list(status = ''): Promise<ApiResponse<CmsUnit[]>> {
+    return unitsApi.list(status)
+  },
+
+  /** 单关详情 */
+  getById(levelId: string): Promise<ApiResponse<CmsUnit>> {
+    return unitsApi.getById(levelId)
+  },
+}
+
 // 用户反馈
 export const feedbackApi = {
   submit(payload: {
@@ -234,12 +255,51 @@ export const favoritesApi = {
 }
 
 // 音频分析API
+//
+// 说明（第 5 周 D 修复）：
+//   1) 后端 Form 参数名是 unit_id，不是 unitId —— 原来这里传错会让后端直接 422；
+//   2) 录音分析**不**走 request() 的「非 2xx 就抛错」策略：单元还没开放检测时，后端返回
+//      400 + 一句中文说明（例如「『xx』的检测任务尚未通过验证…」），那句话要原样给用户看，
+//      不能被压成「服务器错误: 400」。所以单独提供 analyzeRaw。
+export interface AudioAnalyzeResponse {
+  code: number
+  message?: string
+  /** 录音质量不达标时后端返回 evaluable:false 的精简结构，故此处不写死类型 */
+  data?: PronunciationAssessment | Record<string, unknown> | null
+}
+
 export const audioAnalysisApi = {
-  // 上传音频进行分析
+  /**
+   * 上传录音做发音分析，返回后端原始 JSON（不按状态码抛错，保留后端的中文说明）。
+   * recording store 走这个方法，避免再硬编码 http://localhost:8000。
+   */
+  async analyzeRaw(audio: Blob, unitId: string): Promise<AudioAnalyzeResponse> {
+    const formData = new FormData()
+    formData.append('audio', audio, 'recording.webm')
+    formData.append('unit_id', unitId)
+
+    const response = await fetch(`${API_BASE_URL}/audio/analyze`, {
+      method: 'POST',
+      body: formData,
+    })
+
+    let payload: AudioAnalyzeResponse | null = null
+    try {
+      payload = (await response.json()) as AudioAnalyzeResponse
+    } catch {
+      payload = null
+    }
+    if (!payload) {
+      throw new Error(`服务器没有返回可解析的结果（HTTP ${response.status}）`)
+    }
+    return payload
+  },
+
+  // 上传音频进行分析（统一走 request()，2xx 之外的响应会抛错）
   analyze(audioFile: File, unitId: string): Promise<ApiResponse<PronunciationAssessment>> {
     const formData = new FormData()
     formData.append('audio', audioFile)
-    formData.append('unitId', unitId)
+    formData.append('unit_id', unitId)
 
     return request('/audio/analyze', {
       method: 'POST',

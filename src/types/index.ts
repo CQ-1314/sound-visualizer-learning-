@@ -80,6 +80,10 @@ export interface AudioAnalysisResult {
   duration: number // 时长
   sampleRate: number // 采样率
   mfcc: number[][] // MFCC特征
+  //新增：
+  voiced_flag?: boolean[]
+  voiced_probs?: number[]
+  
   // 深度学习分析结果
   recognizedText: string // Wav2Vec2 识别出的拼音文本
   detectedTone: number // 识别出的声调 (0-4)
@@ -152,6 +156,22 @@ export interface CmsUnit {
   status: 'draft' | 'published'
   verified: boolean
   order: number
+  /**
+   * 正式示范音地址（第 5 周 D：关卡页至少一关示范可播放）
+   * 由 I 提供音频、C 走 CMS 审核发布；后端以 demoAudio 返回。
+   * 未提供时前端回落浏览器语音合成，并挂 TTS 声明，不冒充正式示范音。
+   */
+  demoAudio?: string | null
+  /**
+   * 以下为排期第 4/5 周请 C 补的 30 关正式列。
+   * 全部可选：C 补列并发布后前端自动生效，不需要再改前端代码。
+   */
+  target?: string
+  group?: string
+  practice?: Array<Record<string, string>>
+  detectionOpen?: boolean
+  reviewStatus?: string
+  version?: number
 }
 
 export interface UserFeedbackItem {

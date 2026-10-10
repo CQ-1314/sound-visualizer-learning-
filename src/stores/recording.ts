@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { audioAnalysisApi } from '@/api'
 import type { RecordingState, AudioAnalysisResult, PronunciationAssessment, FeedbackItem } from '@/types'
 
 function mapFeedback(raw: any[]): FeedbackItem[] {
@@ -127,12 +128,29 @@ export const useRecordingStore = defineStore('recording', () => {
     }
   }
 
-  function stopRecording() {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop()
+  /**
+   * 停止录音。
+   * 返回 Promise：resolve 时录音 Blob 已经写进 store。
+   * 原因：MediaRecorder.stop() 之后 onstop 是异步触发的，如果"刚点停止就点分析"，
+   * analyzeRecording 会读到空的 audioBlob 而报「没有录音可分析」——这是录音→分析之间
+   * 的一个竞态，必须等 onstop 完成再分析。
+   */
+  function stopRecording(): Promise<void> {
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null }
     if (audioContext) { audioContext.close(); audioContext = null }
     recordingState.value.isRecording = false
     recordingState.value.isPaused = false
+    return new Promise<void>((resolve) => {
+      const recorder = mediaRecorder
+      if (!recorder || recorder.state === 'inactive') {
+        resolve()
+        return
+      }
+      // onstop（在 startRecording 里绑定，负责写入 Blob）先执行；await 的后续代码
+      // 会在整个事件派发结束后才跑，因此拿到的一定是本次录音的 Blob。
+      recorder.addEventListener('stop', () => resolve(), { once: true })
+      recorder.stop()
+    })
   }
 
   function clearRecording() {
@@ -153,12 +171,9 @@ export const useRecordingStore = defineStore('recording', () => {
     analysisResult.value = null
     assessment.value = null
     try {
-      const formData = new FormData()
-      formData.append('audio', recordingState.value.audioBlob, 'recording.webm')
-      formData.append('unit_id', unitId)
-      const response = await fetch('http://localhost:8000/api/audio/analyze', { method: 'POST', body: formData })
-      if (!response.ok) throw new Error(`服务器错误: ${response.status}`)
-      const result = await response.json()
+      // 走统一的网络层（src/api/index.ts 的 audioAnalysisApi），不再硬编码后端地址。
+      // analyzeRaw 会保留后端 400 时的中文说明，不会压成「服务器错误: 400」。
+      const result = await audioAnalysisApi.analyzeRaw(recordingState.value.audioBlob, unitId)
       if (result.code === 200 && result.data) {
         const mapped = mapAssessment(result.data)
         assessment.value = mapped
